@@ -66,6 +66,14 @@
             android:textColor="#FFFFFF"
             android:textSize="18sp" />
 
+        <CheckBox
+            android:id="@+id/autostart"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/autostart"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp" />
+
         <Button
             android:id="@+id/save"
             android:layout_width="match_parent"

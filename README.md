@@ -53,5 +53,18 @@ El APK queda en `app/build/outputs/apk/debug/app-debug.apk`.
 
 Sin PC: sube el APK a la nube y ábrelo en el stick con *Downloader* o *Send Files to TV*.
 
+### Iniciar al encender
+La opción **Iniciar al encender** (activada por defecto) abre la app automáticamente al arrancar el stick.
+En Android 10 o superior, Android solo deja abrir una app desde segundo plano si tiene el permiso
+*Mostrar sobre otras apps*. En Android TV ese ajuste no suele aparecer en el menú, así que se concede una vez con adb:
+
+```bash
+adb shell appops set com.rtspviewer.tv SYSTEM_ALERT_WINDOW allow
+adb shell appops write-settings
+```
+
+Si el stick se alimenta desde un USB de la tele, se reinicia cada vez que enciendes la TV y la app se abre sola.
+Si está enchufado a la corriente, solo entra en reposo y al despertar vuelve a la pantalla de inicio.
+
 ## Privacidad
 La configuración (incluida la contraseña de la cámara) se guarda solo en el dispositivo, en las preferencias privadas de la app. La app no envía datos a ningún servidor.

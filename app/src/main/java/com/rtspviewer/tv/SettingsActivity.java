@@ -11,7 +11,7 @@ import android.widget.Toast;
 public class SettingsActivity extends Activity {
 
     private EditText ip, port, user, pass, path;
-    private CheckBox tcp;
+    private CheckBox tcp, autostart;
     private TextView preview;
 
     @Override
@@ -25,6 +25,7 @@ public class SettingsActivity extends Activity {
         pass = findViewById(R.id.pass);
         path = findViewById(R.id.path);
         tcp = findViewById(R.id.tcp);
+        autostart = findViewById(R.id.autostart);
         preview = findViewById(R.id.preview);
 
         SharedPreferences p = Prefs.get(this);
@@ -34,6 +35,7 @@ public class SettingsActivity extends Activity {
         pass.setText(p.getString(Prefs.PASS, ""));
         path.setText(p.getString(Prefs.PATH, ""));
         tcp.setChecked(p.getBoolean(Prefs.TCP, true));
+        autostart.setChecked(Prefs.autoStart(this));
         updatePreview();
 
         findViewById(R.id.save).setOnClickListener(v -> save());
@@ -53,6 +55,7 @@ public class SettingsActivity extends Activity {
                 .putString(Prefs.PASS, pass.getText().toString())
                 .putString(Prefs.PATH, path.getText().toString().trim())
                 .putBoolean(Prefs.TCP, tcp.isChecked())
+                .putBoolean(Prefs.AUTOSTART, autostart.isChecked())
                 .apply();
         Toast.makeText(this, R.string.saved, Toast.LENGTH_SHORT).show();
         finish();

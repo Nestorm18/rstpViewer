@@ -5,7 +5,8 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 
 final class Prefs {
-    static final String IP = "ip", PORT = "port", USER = "user", PASS = "pass", PATH = "path", TCP = "tcp";
+    static final String IP = "ip", PORT = "port", USER = "user", PASS = "pass", PATH = "path", TCP = "tcp",
+            AUTOSTART = "autostart";
 
     private Prefs() {}
 
@@ -19,6 +20,10 @@ final class Prefs {
 
     static boolean useTcp(Context c) {
         return get(c).getBoolean(TCP, true);
+    }
+
+    static boolean autoStart(Context c) {
+        return get(c).getBoolean(AUTOSTART, true);
     }
 
     /** rtsp://usuario:clave@ip:puerto/ruta */
