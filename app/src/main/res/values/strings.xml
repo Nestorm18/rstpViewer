@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RTSP Viewer</string>
+    <string name="settings_title">Configurar cámara</string>
+    <string name="ip">IP de la cámara</string>
+    <string name="port">Puerto RTSP</string>
+    <string name="user">Usuario</string>
+    <string name="pass">Contraseña</string>
+    <string name="path">Ruta del stream (opcional)</string>
+    <string name="path_help">Hikvision: /Streaming/Channels/101 · Dahua/Imou: /cam/realmonitor?channel=1&amp;subtype=0 · TP-Link Tapo: /stream1 · Ezviz: /h264/ch1/main/av_stream</string>
+    <string name="tcp">Usar TCP (más estable)</string>
+    <string name="save">Guardar</string>
+    <string name="saved">Guardado</string>
+    <string name="ip_required">Escribe la IP</string>
+    <string name="connecting">Conectando…</string>
+    <string name="reconnecting">Reconectando…</string>
+    <string name="error_fmt">Error: %1$s\nReintentando…\n(OK para configurar)</string>
+</resources>

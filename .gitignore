@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Claves de firma
+*.jks
+*.keystore
+
+# APKs
+*.apk
+*.aab
+
+# SO
+.DS_Store
+Thumbs.db
