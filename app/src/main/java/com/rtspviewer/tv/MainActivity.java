@@ -14,7 +14,9 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
+import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import androidx.media3.ui.PlayerView;
@@ -24,11 +26,25 @@ public class MainActivity extends Activity {
 
     private static final long RETRY_MS = 5000;
 
+    // Baja latencia: empezar a mostrar con muy poco vídeo en el buffer.
+    private static final int MIN_BUFFER_MS = 500;
+    private static final int MAX_BUFFER_MS = 2000;
+    private static final int START_BUFFER_MS = 100;
+    private static final int REBUFFER_MS = 300;
+
+    // Si se acumula retraso, acelerar un poco hasta volver al directo.
+    private static final long LATENCY_CHECK_MS = 1000;
+    private static final long CATCH_UP_ABOVE_MS = 700;
+    private static final long CATCH_UP_UNTIL_MS = 250;
+    private static final float CATCH_UP_SPEED = 1.25f;
+
     private PlayerView playerView;
     private TextView status;
     private ExoPlayer player;
+    private boolean catchingUp;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable retry = this::startPlayer;
+    private final Runnable latencyCheck = this::checkLatency;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -85,7 +101,12 @@ public class MainActivity extends Activity {
         releasePlayer();
         showStatus(getString(R.string.connecting));
 
-        player = new ExoPlayer.Builder(this).build();
+        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(MIN_BUFFER_MS, MAX_BUFFER_MS, START_BUFFER_MS, REBUFFER_MS)
+                .setPrioritizeTimeOverSizeThresholds(true)
+                .build();
+        player = new ExoPlayer.Builder(this).setLoadControl(loadControl).build();
+        catchingUp = false;
         playerView.setPlayer(player);
 
         RtspMediaSource source = new RtspMediaSource.Factory()
@@ -98,6 +119,8 @@ public class MainActivity extends Activity {
             public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
                     status.setVisibility(View.GONE);
+                    handler.removeCallbacks(latencyCheck);
+                    handler.postDelayed(latencyCheck, LATENCY_CHECK_MS);
                 } else if (state == Player.STATE_ENDED) {
                     showStatus(getString(R.string.reconnecting));
                     scheduleRetry();
@@ -121,7 +144,22 @@ public class MainActivity extends Activity {
         handler.postDelayed(retry, RETRY_MS);
     }
 
+    /** Mantiene el vídeo cerca del directo: si el buffer crece, reproduce algo más rápido. */
+    private void checkLatency() {
+        if (player == null) return;
+        long buffered = player.getTotalBufferedDuration();
+        if (!catchingUp && buffered > CATCH_UP_ABOVE_MS) {
+            catchingUp = true;
+            player.setPlaybackParameters(new PlaybackParameters(CATCH_UP_SPEED));
+        } else if (catchingUp && buffered < CATCH_UP_UNTIL_MS) {
+            catchingUp = false;
+            player.setPlaybackParameters(PlaybackParameters.DEFAULT);
+        }
+        handler.postDelayed(latencyCheck, LATENCY_CHECK_MS);
+    }
+
     private void releasePlayer() {
+        handler.removeCallbacks(latencyCheck);
         if (player != null) {
             player.release();
             player = null;
