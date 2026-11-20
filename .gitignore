@@ -32,3 +32,6 @@ pc/panel_central.json*
 
 # Archivos locales de trabajo
 temp/
+
+# Binarios para las releases
+release/
