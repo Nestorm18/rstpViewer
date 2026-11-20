@@ -1117,9 +1117,12 @@ function randomEsquela(s) {
   const DIA = 86400000, muerte = new Date(Date.now() - Math.floor(Math.random() * 3) * DIA);
   const conduccion = new Date(muerte.getTime() + (1 + Math.floor(Math.random() * 2)) * DIA);
   const dia = RND.dia[conduccion.getDay()];
+  // Foto también al azar: la mitad de las veces ninguna; si hay, debajo (paisaje) o a la izquierda (retrato).
+  const foto = pick(['ninguna', 'ninguna', 'debajo', 'izquierda']);
   const fallecio = woman ? 'confortada' : 'confortado';
   return { ...s,
-    photo: randomPhoto(s.photoPos === 'izquierda'),
+    photo: foto === 'ninguna' ? null : randomPhoto(foto === 'izquierda'),
+    photoPos: foto === 'izquierda' ? 'izquierda' : 'debajo',
     heading: woman ? 'La Señora' : 'El Señor',
     name: `${woman ? 'Dña.' : 'D.'} ${first} ${a1} ${a2}`,
     age: String(60 + Math.floor(Math.random() * 40)),
@@ -1389,7 +1392,8 @@ $('slide-form').addEventListener('click', async e => {
   if (e.target.dataset.random !== undefined) {
     const s = slides[current];
     const filled = [s.heading, s.name, s.age, s.details].some(v => String(v || '').trim()) || s.photo;
-    if (filled && !await ask('¿Sustituir esta esquela por un ejemplo aleatorio (texto y foto)?', { ok: 'Sustituir' })) return;
+    if (filled && !await ask(`¿Sustituir esta esquela por un ejemplo aleatorio?
+(Se cambian el texto y la foto)`, { ok: 'Sustituir' })) return;
     slides[current] = randomEsquela(s); saveSlides(); renderEditor();
     return;
   }
