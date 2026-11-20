@@ -752,6 +752,13 @@ PAGE = r"""<!doctype html>
   .bar i { display:block; height:100%; background:var(--accent); }
   .x { background:transparent; color:var(--muted); border:0; padding:2px 6px; font-size:16px; }
   #notice { min-height:1.4em; margin:0 0 12px; }
+  /* Ventana de confirmación propia (el navegador puede bloquear confirm/prompt sin avisar) */
+  .dlg { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:10; padding:16px; }
+  .dlg[hidden] { display:none; }
+  .dlg-box { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:18px 20px;
+             max-width:460px; width:100%; box-shadow:0 10px 30px rgba(0,0,0,.3); }
+  .dlg-box p { margin:0 0 12px; white-space:pre-line; }
+  .dlg-box input { width:100%; margin-bottom:12px; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   @media (max-width:820px) { .grid { grid-template-columns:1fr; } }
   .grid section { margin:0; }
@@ -778,7 +785,14 @@ PAGE = r"""<!doctype html>
 <main>
   <h1>RTSP Viewer · Panel central</h1>
   <p class="sub">Gestiona a la vez todos los equipos de la red. Los cambios se aplican a los equipos <b>marcados</b>.</p>
-  <p id="notice"></p>
+  <p id="notice" role="status"></p>
+  <div id="dlg" class="dlg" hidden role="dialog" aria-modal="true" aria-labelledby="dlg-text">
+    <div class="dlg-box">
+      <p id="dlg-text"></p>
+      <input type="text" id="dlg-input" hidden>
+      <div class="row"><button id="dlg-ok">Aceptar</button><button id="dlg-cancel" class="ghost">Cancelar</button></div>
+    </div>
+  </div>
 
   <section>
     <h2>Equipos</h2>
@@ -870,7 +884,34 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const mb = b => { const m = b / 1048576; return (m < 10 ? m.toFixed(1) : m.toFixed(0)) + ' MB'; };
 function saveSel() { try { localStorage.setItem('sel', JSON.stringify([...selected])); } catch (_) {} }
 
-function notice(text, kind) { $('notice').textContent = text || ''; $('notice').className = kind || ''; }
+let localNoticeAt = 0;
+function showNotice(text, kind) { $('notice').textContent = text || ''; $('notice').className = kind || ''; }
+// Mensaje de esta página: tiene prioridad sobre avisos anteriores del servidor.
+function notice(text, kind) { localNoticeAt = Date.now() / 1000; showNotice(text, kind); }
+
+// Confirmación o pregunta en una ventana de la propia página (no se puede bloquear como confirm/prompt).
+// ask(texto) → true/false;  ask(texto, {input:'valor'}) → texto escrito o null.
+function ask(text, opts = {}) {
+  return new Promise(resolve => {
+    const dlg = $('dlg'), inp = $('dlg-input'), isInput = opts.input != null;
+    $('dlg-text').textContent = text;
+    $('dlg-ok').textContent = opts.ok || 'Aceptar';
+    inp.hidden = !isInput; if (isInput) inp.value = opts.input;
+    dlg.hidden = false;
+    (isInput ? inp : $('dlg-ok')).focus();
+    const done = v => {
+      dlg.hidden = true; $('dlg-ok').onclick = $('dlg-cancel').onclick = null;
+      document.removeEventListener('keydown', key, true); resolve(v);
+    };
+    const key = e => {
+      if (e.key === 'Escape') { e.preventDefault(); done(isInput ? null : false); }
+      else if (e.key === 'Enter') { e.preventDefault(); done(isInput ? inp.value : true); }
+    };
+    document.addEventListener('keydown', key, true);
+    $('dlg-ok').onclick = () => done(isInput ? inp.value : true);
+    $('dlg-cancel').onclick = () => done(isInput ? null : false);
+  });
+}
 
 async function post(url, body) {
   const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
@@ -914,7 +955,8 @@ function render() {
   $('all').checked = state.devices.length > 0 && state.devices.every(d => selected.has(d.ip));
   if (!secsTouched && state.seconds_per_slide) $('secs').value = state.seconds_per_slide;
   if (typeof slideSecsTouched !== 'undefined' && !slideSecsTouched && state.seconds_per_slide) $('slide-secs').value = state.seconds_per_slide;
-  if (state.notice && !uploading) notice(state.notice.text, state.notice.state === 'error' ? 'bad' : state.notice.state === 'ok' ? 'ok' : 'warn');
+  if (state.notice && !uploading && state.notice.time > localNoticeAt)
+    showNotice(state.notice.text, state.notice.state === 'error' ? 'bad' : state.notice.state === 'ok' ? 'ok' : 'warn');
   $('send-file').disabled = uploading || state.busy;
   const esqBtn = document.querySelector('[data-mode=esquela]');
   if (esqBtn && !sendingSlides) esqBtn.disabled = state.busy;
@@ -937,14 +979,14 @@ $('rows').addEventListener('change', e => {
   const ip = e.target.dataset.ip; if (!ip) return;
   e.target.checked ? selected.add(ip) : selected.delete(ip); saveSel(); render();
 });
-$('rows').addEventListener('click', e => {
+$('rows').addEventListener('click', async e => {
   const rm = e.target.dataset.remove, rn = e.target.closest('[data-rename]')?.dataset.rename;
   if (rm) {
-    if (confirm(`¿Quitar ${rm} de la lista? (No se cambia nada en el equipo)`))
+    if (await ask(`¿Quitar ${rm} de la lista?\n(No se cambia nada en el equipo)`, { ok: 'Quitar' }))
       action(() => post('/api/devices/remove', { ip: rm }));
   } else if (rn) {
     const d = state.devices.find(x => x.ip === rn);
-    const name = prompt(`Nombre para ${rn}:`, d?.name || '');
+    const name = await ask(`Nombre para ${rn}:`, { input: d?.name || '', ok: 'Guardar' });
     if (name !== null) action(() => post('/api/devices/rename', { ip: rn, name }));
   }
 });
@@ -963,10 +1005,10 @@ document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
   action(() => post('/api/mode', { ips: list, mode: b.dataset.mode }));
 });
 $('send-text').onclick = () => { const list = ips(); if (list) action(() => post('/api/text', { ips: list, text: $('text').value })); };
-document.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
+document.querySelectorAll('[data-delete]').forEach(b => b.onclick = async () => {
   const list = ips(); if (!list) return;
   const what = b.dataset.delete === 'esquela' ? 'las esquelas' : 'la imagen';
-  if (confirm(`¿Borrar ${what} de ${list.length} equipo(s)? Si se estaba viendo, volverán a la cámara.`))
+  if (await ask(`¿Borrar ${what} de ${list.length} equipo(s)?\nSi se estaba viendo, volverán a la cámara.`, { ok: 'Borrar' }))
     action(() => post('/api/delete', { ips: list, slot: b.dataset.delete }));
 });
 $('secs').oninput = () => { secsTouched = true; };
@@ -1013,23 +1055,76 @@ const RND = {
   apellido: ['García','Fernández','López','Martínez','Rodríguez','Sánchez','Pérez','Gómez','Díaz','Vázquez','Castro','Otero','Iglesias','Rey','Varela','Domínguez'],
   santo: ['San Martín','Santa María','San Pedro','Santiago','San Juan','Santa Eulalia','San Miguel','San Esteban'],
   hora: ['10:30','11:00','12:00','16:00','16:30','17:00','17:30','18:00'],
-  dia: ['lunes','martes','miércoles','jueves','viernes','sábado','domingo'],
+  dia: ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'],  // orden de Date.getDay()
   mes: ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'],
 };
+
+// Foto de ejemplo dibujada al azar: paisaje con iglesia (para «debajo») o retrato genérico (para «izquierda»).
+function randomPhoto(vertical) {
+  const w = vertical ? 600 : 1600, h = vertical ? 800 : 500;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  const r = (a, b) => a + Math.random() * (b - a);
+  if (vertical) {
+    const fondos = [['#cfd8e3', '#8fa3b8'], ['#e3d9cc', '#a8977f'], ['#d6e0d4', '#8ea38a'], ['#ddd3df', '#9a8ba3']];
+    const [f1, f2] = pick(fondos);
+    let g = x.createRadialGradient(w / 2, h * 0.4, 50, w / 2, h / 2, h * 0.8);
+    g.addColorStop(0, f1); g.addColorStop(1, f2); x.fillStyle = g; x.fillRect(0, 0, w, h);
+    x.fillStyle = pick(['#4a4f57', '#565049', '#3f4a52', '#5a5560']);
+    x.beginPath(); x.ellipse(w / 2, h * 0.38, w * 0.17, h * 0.15, 0, 0, Math.PI * 2); x.fill();          // cabeza
+    x.beginPath(); x.ellipse(w / 2, h * 0.98, w * 0.42, h * 0.36, 0, Math.PI, Math.PI * 2); x.fill();     // hombros
+    return c.toDataURL('image/jpeg', 0.88);
+  }
+  const cielos = [['#7fa6cf', '#f1d3a8'], ['#8bb0d6', '#e8e6dd'], ['#a6a9c9', '#f2c9a6'], ['#6f97c1', '#dfe6ec']];
+  const [c1, c2] = pick(cielos);
+  let g = x.createLinearGradient(0, 0, 0, h * 0.75); g.addColorStop(0, c1); g.addColorStop(1, c2);
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  // Colinas: dos capas con perfil aleatorio
+  const colina = (base, amp, color) => {
+    x.fillStyle = color; x.beginPath(); x.moveTo(0, h);
+    for (let px = 0; px <= w; px += 40) x.lineTo(px, base + Math.sin(px / r(140, 260) + r(0, 6)) * amp);
+    x.lineTo(w, h); x.closePath(); x.fill();
+  };
+  colina(h * r(0.55, 0.62), r(10, 25), pick(['#8aa37a', '#9aae84', '#7f9a76']));
+  colina(h * r(0.70, 0.78), r(8, 18), pick(['#5f7f4f', '#6b8a57', '#58744a']));
+  // Iglesia
+  const ix = r(w * 0.25, w * 0.7), base = h * 0.74, bw = r(150, 210), bh = r(70, 95);
+  const muro = pick(['#efe7da', '#e9e2d6', '#d9d2c4']), tejado = pick(['#9c4f3a', '#8a4636', '#7c5b4a']);
+  x.fillStyle = muro; x.fillRect(ix, base - bh, bw, bh);
+  x.fillStyle = tejado; x.beginPath(); x.moveTo(ix - 10, base - bh); x.lineTo(ix + bw / 2, base - bh - 45); x.lineTo(ix + bw + 10, base - bh); x.fill();
+  const tw = 46, th = bh + r(60, 90), tx = ix - tw + 8;
+  x.fillStyle = muro; x.fillRect(tx, base - th, tw, th);
+  x.fillStyle = tejado; x.beginPath(); x.moveTo(tx - 6, base - th); x.lineTo(tx + tw / 2, base - th - 40); x.lineTo(tx + tw + 6, base - th); x.fill();
+  x.fillStyle = '#3b3b3b'; x.fillRect(tx + tw / 2 - 2, base - th - 62, 4, 24); x.fillRect(tx + tw / 2 - 9, base - th - 54, 18, 4);
+  x.fillStyle = '#5a4a3e'; x.fillRect(ix + bw / 2 - 12, base - 36, 24, 36);                                  // puerta
+  // Cipreses
+  for (let i = 0, n = 2 + Math.floor(r(0, 4)); i < n; i++) {
+    const cx = pick([r(w * 0.05, ix - 80), r(ix + bw + 40, w * 0.95)]), ch = r(90, 150);
+    x.fillStyle = pick(['#2f4a32', '#35523a', '#2a4430']);
+    x.beginPath(); x.ellipse(cx, base - ch / 2 + 6, 16, ch / 2, 0, 0, Math.PI * 2); x.fill();
+  }
+  x.fillStyle = pick(['#6f8f5c', '#678653']); x.fillRect(0, base, w, h - base);                                // suelo
+  return c.toDataURL('image/jpeg', 0.88);
+}
+
 function randomEsquela(s) {
   const woman = Math.random() < 0.5;
   const first = pick(woman ? RND.mujer : RND.hombre);
   let a1 = pick(RND.apellido), a2 = pick(RND.apellido);
   while (a2 === a1) a2 = pick(RND.apellido);
   const santo = pick(RND.santo);
-  const dia = pick(RND.dia);
+  // Falleció hoy o en los dos días anteriores; la conducción, uno o dos días después.
+  const DIA = 86400000, muerte = new Date(Date.now() - Math.floor(Math.random() * 3) * DIA);
+  const conduccion = new Date(muerte.getTime() + (1 + Math.floor(Math.random() * 2)) * DIA);
+  const dia = RND.dia[conduccion.getDay()];
   const fallecio = woman ? 'confortada' : 'confortado';
   return { ...s,
+    photo: randomPhoto(s.photoPos === 'izquierda'),
     heading: woman ? 'La Señora' : 'El Señor',
     name: `${woman ? 'Dña.' : 'D.'} ${first} ${a1} ${a2}`,
     age: String(60 + Math.floor(Math.random() * 40)),
     details: [
-      `Falleció el día ${1 + Math.floor(Math.random() * 28)} de ${pick(RND.mes)} de 2026,`,
+      `Falleció el día ${muerte.getDate()} de ${RND.mes[muerte.getMonth()]} de ${muerte.getFullYear()},`,
       `${fallecio} con los Santos Sacramentos.`,
       '',
       'Conducción del cadáver:',
@@ -1290,25 +1385,27 @@ $('slide-form').addEventListener('change', async e => {
     slides[current][e.target.dataset.k] = e.target.value; redrawCurrent();
   }
 });
-$('slide-form').addEventListener('click', e => {
+$('slide-form').addEventListener('click', async e => {
   if (e.target.dataset.random !== undefined) {
     const s = slides[current];
-    const filled = [s.heading, s.name, s.age, s.details].some(v => String(v || '').trim());
-    if (filled && !confirm('¿Sustituir el texto de esta esquela por un ejemplo aleatorio? (La imagen se mantiene)')) return;
+    const filled = [s.heading, s.name, s.age, s.details].some(v => String(v || '').trim()) || s.photo;
+    if (filled && !await ask('¿Sustituir esta esquela por un ejemplo aleatorio (texto y foto)?', { ok: 'Sustituir' })) return;
     slides[current] = randomEsquela(s); saveSlides(); renderEditor();
     return;
   }
   const k = e.target.dataset.clear; if (!k) return;
   slides[current][k] = null; saveSlides(); renderEditor();
 });
-$('slides').addEventListener('click', e => {
+$('slides').addEventListener('click', async e => {
   const t = e.target.dataset;
   if (t.up != null) { const i = +t.up; if (i > 0) { [slides[i - 1], slides[i]] = [slides[i], slides[i - 1]]; current = i - 1; } }
   else if (t.down != null) { const i = +t.down; if (i < slides.length - 1) { [slides[i + 1], slides[i]] = [slides[i], slides[i + 1]]; current = i + 1; } }
   else if (t.del != null) {
-    if (slides.length === 1) { notice('Tiene que quedar al menos una diapositiva.', 'bad'); return; }
-    if (!confirm('¿Quitar esta diapositiva?')) return;
-    slides.splice(+t.del, 1);
+    const i = +t.del;
+    if (!await ask(`¿Quitar la diapositiva ${i + 1} del editor?`, { ok: 'Quitar' })) return;
+    slides.splice(i, 1);
+    if (!slides.length) slides = [newEsquela()];  // el editor nunca se queda vacío
+    if (current >= i && current > 0) current--;
   } else {
     const th = e.target.closest('.thumb'); if (!th) return; current = +th.dataset.i;
   }
@@ -1316,12 +1413,12 @@ $('slides').addEventListener('click', e => {
 });
 $('add-esq').onclick = () => { slides.push(newEsquela()); current = slides.length - 1; saveSlides(); renderEditor(); };
 $('add-img').onclick = () => { slides.push(newImage()); current = slides.length - 1; saveSlides(); renderEditor(); };
-$('example-slides').onclick = () => {
-  if (!confirm('¿Cambiar lo que hay en el editor por la esquela de ejemplo?')) return;
+$('example-slides').onclick = async () => {
+  if (!await ask('¿Cambiar lo que hay en el editor por la esquela de ejemplo?', { ok: 'Cambiar' })) return;
   slides = [exampleEsquela()]; current = 0; saveSlides(); renderEditor();
 };
-$('clear-slides').onclick = () => {
-  if (!confirm('¿Vaciar el editor y empezar de nuevo?')) return;
+$('clear-slides').onclick = async () => {
+  if (!await ask('¿Vaciar el editor y empezar de nuevo?', { ok: 'Vaciar' })) return;
   slides = [newEsquela()]; current = 0; saveSlides(); renderEditor();
 };
 
@@ -1334,8 +1431,11 @@ async function sendSlides(list) {
   const secs = parseInt($('slide-secs').value, 10);
   if (!(secs >= 1 && secs <= 600)) { notice('Los segundos por diapositiva deben estar entre 1 y 600.', 'bad'); return; }
   if (slides.some(s => s.type === 'imagen' && !s.image)) { notice('Hay una diapositiva de imagen sin imagen elegida.', 'bad'); return; }
-  const dudosa = slides.some(s => s.type === 'esquela' && (!s.name.trim() || s.name.trim() === 'Dña. Nombre Apellido Apellido'));
-  if (dudosa && !confirm('Alguna esquela no tiene nombre o sigue con el nombre de ejemplo. ¿Enviarla igualmente?')) return;
+  const dudosas = slides.map((s, i) => s.type === 'esquela' && (!s.name.trim() || s.name.trim() === 'Dña. Nombre Apellido Apellido') ? i + 1 : 0).filter(Boolean);
+  if (dudosas.length && !await ask(`La esquela ${dudosas.join(', ')} no tiene nombre o sigue con el nombre de ejemplo.\n¿Enviar igualmente?`, { ok: 'Enviar' })) {
+    notice(`No se ha enviado nada. Cambia o quita la esquela ${dudosas.join(', ')} (nombre de ejemplo o vacío).`, 'bad');
+    return;
+  }
   const btn = document.querySelector('[data-mode=esquela]');
   sendingSlides = true; btn.disabled = true; $('slides-prog').hidden = false; $('slides-prog').value = 0;
   try {
