@@ -38,7 +38,8 @@ public class App extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
-        Backup.cleanTemp(this);
+        // Al arrancar no hay subidas en curso: borrar todo lo que no se usa (restos de envíos cortados).
+        Backup.cleanUnused(this, true);
         new WebServer(this, HTTP_PORT).start();
     }
 

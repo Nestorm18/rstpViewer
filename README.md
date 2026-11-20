@@ -47,6 +47,8 @@ Cada equipo guarda **por separado** sus esquelas y su imagen, así que se puede 
 Al enviar esquelas o una imagen, se muestran al momento. Si se elige «Esquelas» o «Imagen» en un equipo que no tiene ese contenido, se ve un texto grande (por defecto «Cámara no disponible»).
 
 Los cambios se aplican al momento, sin reiniciar la app. El equipo lo guarda todo, así que el PC puede apagarse después.
+
+**Espacio:** cada equipo guarda solo unas esquelas y una imagen; al enviar otras, las anteriores se borran. Si un envío se corta (por ejemplo, por un corte de luz), los restos se borran solos al arrancar la app, o desde el panel central con **Liberar espacio**.
 En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel central) y también se puede escribir ese texto.
 
 ### Panel central (varios equipos a la vez)
@@ -55,7 +57,8 @@ En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel centra
 - **Abrirlo:** doble clic en [`pc/iniciar_panel.bat`](pc/iniciar_panel.bat). Se abre una ventana negra con las direcciones y el navegador en `http://localhost:8000`. Para tenerlo sin Python, [`pc/crear_exe.bat`](pc/crear_exe.bat) crea `PanelCentral.exe` con PyInstaller.
 - **Desde otros PCs o el móvil:** abre `http://IP_DEL_PC:8000`. La dirección exacta aparece en la ventana negra. La primera vez, Windows pregunta si permite a Python usar la red: acepta para **redes privadas**.
 - **Equipos:** **Buscar en la red** añade todos los que encuentre en la red local /24. También se pueden añadir a mano con su IP y un nombre. Si haces clic en el nombre, lo puedes cambiar.
-- **Tabla de estado** de cada equipo: conexión, cámara, qué está mostrando, qué esquelas e imagen tiene guardadas y espacio libre. Se actualiza sola.
+- **Tabla de estado** de cada equipo: conexión, cámara, qué está mostrando, qué esquelas e imagen tiene guardadas y espacio libre (y, en naranja, el espacio ocupado por archivos que no se usan). Se actualiza sola.
+- **Liberar espacio en los marcados** borra en esos equipos los archivos que no se usan (restos de envíos cortados), sin tocar las esquelas ni la imagen guardadas.
 - **Mostrar: Cámara · Esquelas · Imagen** cambia lo que se ve en los equipos marcados. **Esquelas** envía directamente lo que hay en el editor y lo muestra; si alguna esquela no tiene nombre o sigue con el de ejemplo, pide confirmación.
 - **Esquelas**, con un editor que no necesita PowerPoint:
   - **+ Esquela:** encabezado («La Señora», «El Señor»…), nombre, edad (si pones «87», sale «87 años»), detalles (las líneas que terminan en «:» salen en negrita), cruz y D.E.P. Siempre con fondo blanco. Admite una imagen opcional, que puede ir **debajo de la esquela, alargada** (por ejemplo, la foto de un servicio o un lugar) o **a la izquierda, en vertical** (la foto de la persona).
@@ -84,6 +87,7 @@ El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local 
 | `POST /api/text` | texto UTF-8 (máx. 500) | Texto que se ve si el hueco elegido está vacío. Si va vacío, se usa el texto por defecto. |
 | `POST /api/mode` | `camara`, `esquela` o `imagen` | Cambia lo que se muestra |
 | `POST /api/delete?slot=esquela\|imagen` | – | Borra ese hueco (sin `slot`, los dos). Si se estaba viendo, vuelve a la cámara. |
+| `POST /api/cleanup` | – | Borra los archivos que no son el contenido actual. Devuelve el estado con `freedBytes`. |
 
 ```json
 {"app":"RTSPViewer","version":"1.3","camera":"ok","showing":"camara","mode":"camara","text":"Cámara no disponible",
@@ -92,6 +96,7 @@ El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local 
 ```
 - `camera` puede ser `ok`, `fallo`, `conectando` o `parada` (cuando se muestran esquelas o imagen).
 - `showing` puede ser `camara`, `esquela`, `imagen` o `ninguno` (la app no está en pantalla).
+- `unusedBytes` es el espacio ocupado por archivos que no se usan.
 - Los errores devuelven `{"error":"mensaje"}` con un código HTTP 4xx o 5xx.
 
 Ejemplos con `curl`:

@@ -68,10 +68,41 @@ final class Backup {
         return new File(dir(c), TEMP_NAME);
     }
 
-    static void cleanTemp(Context c) {
-        //noinspection ResultOfMethodCallIgnored
-        tempFile(c).delete();
-        deleteRecursive(new File(dir(c), EXTRACT_NAME));
+    /**
+     * Archivos de la carpeta que no son el contenido actual de ningún hueco: restos de envíos
+     * cortados (por ejemplo, por un corte de luz). Con {@code includeTemp} incluye también el
+     * temporal de la subida, que solo debe borrarse si no hay ninguna subida en curso.
+     */
+    static synchronized List<File> unused(Context c, boolean includeTemp) {
+        Set<String> keep = new HashSet<>();
+        for (String slot : SLOTS) {
+            File f = current(c, slot);
+            if (f != null) keep.add(f.getName());
+        }
+        if (!includeTemp) {
+            keep.add(TEMP_NAME);
+            keep.add(EXTRACT_NAME);
+        }
+        List<File> out = new ArrayList<>();
+        File[] files = dir(c).listFiles();
+        if (files != null) for (File f : files) if (!keep.contains(f.getName())) out.add(f);
+        return out;
+    }
+
+    static long unusedBytes(Context c) {
+        long total = 0;
+        for (File f : unused(c, false)) total += size(f);
+        return total;
+    }
+
+    /** Borra todo lo que no se está usando. Devuelve los bytes liberados. */
+    static synchronized long cleanUnused(Context c, boolean includeTemp) {
+        long freed = 0;
+        for (File f : unused(c, includeTemp)) {
+            long s = size(f);
+            if (deleteRecursive(f)) freed += s;
+        }
+        return freed;
     }
 
     /** Extensión en minúsculas, sin punto ("" si no tiene). */
@@ -90,12 +121,12 @@ final class Backup {
         return VIDEO_EXT.contains(ext(f.getName())) ? TYPE_VIDEO : TYPE_IMAGE;
     }
 
-    /** Tamaño en bytes (la suma de las diapositivas si es un pase). */
+    /** Tamaño en bytes (la suma del contenido si es una carpeta). */
     static long size(File f) {
         if (!f.isDirectory()) return f.length();
         long total = 0;
         File[] files = f.listFiles();
-        if (files != null) for (File x : files) total += x.length();
+        if (files != null) for (File x : files) total += size(x);
         return total;
     }
 

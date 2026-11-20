@@ -37,6 +37,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * POST /api/text     texto de respaldo (UTF-8)
  * POST /api/mode     camara | esquela | imagen
  * POST /api/delete[?slot=esquela|imagen]   borra un hueco o los dos
+ * POST /api/cleanup  borra los archivos que no se usan (restos de envíos cortados)
  * </pre>
  */
 final class WebServer {
@@ -216,6 +217,9 @@ final class WebServer {
             case "POST /api/delete":
                 delete(req, out);
                 break;
+            case "POST /api/cleanup":
+                cleanup(out);
+                break;
             default:
                 sendJson(out, 404, error("No encontrado: " + req.method + " " + req.path
                         + ". Este equipo se gestiona desde el panel central."));
@@ -250,6 +254,7 @@ final class WebServer {
         }
         j.put("files", files);
         j.put("freeBytes", Backup.freeSpace(app));
+        j.put("unusedBytes", Backup.unusedBytes(app));
         return j;
     }
 
@@ -349,6 +354,23 @@ final class WebServer {
         Prefs.get(app).edit().putString(Prefs.MODE, mode).commit();
         app.notifyConfigChanged();
         sendJson(out, 200, status());
+    }
+
+    /** Borra los archivos que no son el contenido actual (restos de envíos cortados). */
+    private void cleanup(OutputStream out) throws IOException, JSONException {
+        if (!uploadLock.tryLock()) {
+            sendJson(out, 409, error("Hay una subida en curso; inténtalo cuando termine"));
+            return;
+        }
+        long freed;
+        try {
+            freed = Backup.cleanUnused(app, true);
+        } finally {
+            uploadLock.unlock();
+        }
+        JSONObject j = status();
+        j.put("freedBytes", freed);
+        sendJson(out, 200, j);
     }
 
     /** Borra un hueco (?slot=esquela|imagen) o los dos. Si se estaba viendo, vuelve a la cámara. */

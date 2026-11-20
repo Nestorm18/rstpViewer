@@ -265,14 +265,15 @@ def poller():
 
 # =========================================================================== acciones
 
-def run_on(ips, label, fn):
-    """Ejecuta fn(ip) en paralelo en cada equipo, anotando el resultado en su tarea."""
+def run_on(ips, label, fn, done_text=None):
+    """Ejecuta fn(ip) en paralelo en cada equipo, anotando el resultado en su tarea.
+    done_text(datos) da el texto del resultado (por defecto «<label>: hecho»)."""
     def one(ip):
         STATE.set_task(ip, label + "…")
         try:
             data = fn(ip)
             STATE.set_status(ip, data=data)
-            STATE.set_task(ip, label + ": hecho", "ok")
+            STATE.set_task(ip, done_text(data) if done_text else label + ": hecho", "ok")
         except Exception as e:  # noqa: BLE001
             STATE.set_task(ip, friendly(e), "error")
 
@@ -558,6 +559,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/mode": self.mode,
                 "/api/text": self.text,
                 "/api/delete": self.delete,
+                "/api/cleanup": self.cleanup,
                 "/api/settings": self.settings,
                 "/api/slideshow": self.slideshow,
             }.get(url.path)
@@ -602,6 +604,24 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > 500:
             raise ValueError("Texto demasiado largo (máximo 500 caracteres)")
         run_on(self.target_ips(body), "Guardar texto", lambda ip: dev_post(ip, "/api/text", text))
+        self.send_json(200, {"ok": True})
+
+    def cleanup(self, body):
+        def text(data):
+            freed = data.get("freedBytes")
+            if freed is None:
+                return "Esta versión de la app no admite liberar espacio (actualízala)"
+            return f"Liberados {mb(freed)}" if freed else "No había nada sin usar"
+
+        def clean(ip):
+            try:
+                return dev_post(ip, "/api/cleanup")
+            except DeviceError as e:
+                if "No encontrado" in str(e):  # app antigua sin /api/cleanup
+                    return dev_get(ip, "/api/status")
+                raise
+
+        run_on(self.target_ips(body), "Liberar espacio", clean, text)
         self.send_json(200, {"ok": True})
 
     def delete(self, body):
@@ -801,6 +821,7 @@ PAGE = r"""<!doctype html>
       <input type="text" id="new-ip" placeholder="IP (ej. 192.168.1.50)" size="18">
       <input type="text" id="new-name" placeholder="Nombre (opcional)" size="20">
       <button id="add" class="ghost">Añadir</button>
+      <button id="cleanup" class="ghost" style="margin-left:auto">Liberar espacio en los marcados</button>
     </div>
     <div class="table-wrap">
       <table>
@@ -812,7 +833,8 @@ PAGE = r"""<!doctype html>
         <tbody id="rows"></tbody>
       </table>
     </div>
-    <p class="hint">Haz clic en el nombre de un equipo para cambiarlo.</p>
+    <p class="hint">Haz clic en el nombre de un equipo para cambiarlo. «Liberar espacio» borra en los equipos marcados los archivos
+      que no se usan (restos de envíos cortados); no toca las esquelas ni la imagen guardadas.</p>
   </section>
 
   <div class="grid">
@@ -945,7 +967,7 @@ function render() {
       <td>${on ? `<b>${esc(SHOW[s.showing] || s.showing)}</b>` : '<span class="muted">–</span>'}</td>
       <td>${slot('esquela')}</td>
       <td>${slot('imagen')}</td>
-      <td class="muted">${on ? mb(s.freeBytes) : '–'}</td>
+      <td class="muted">${on ? mb(s.freeBytes) + (s.unusedBytes > 0 ? `<div class="warn">${mb(s.unusedBytes)} sin usar</div>` : '') : '–'}</td>
       <td>${task}</td>
       <td><button class="x" data-remove="${esc(d.ip)}" title="Quitar de la lista">×</button></td>
     </tr>`;
@@ -993,6 +1015,7 @@ $('rows').addEventListener('click', async e => {
 $('all').onchange = () => { state.devices.forEach(d => $('all').checked ? selected.add(d.ip) : selected.delete(d.ip)); saveSel(); render(); };
 
 $('scan').onclick = () => action(() => post('/api/scan'));
+$('cleanup').onclick = () => { const list = ips(); if (list) action(() => post('/api/cleanup', { ips: list })); };
 $('add').onclick = () => action(async () => {
   await post('/api/devices/add', { ip: $('new-ip').value, name: $('new-name').value });
   selected.add($('new-ip').value.trim()); saveSel();
