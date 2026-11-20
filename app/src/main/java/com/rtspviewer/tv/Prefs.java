@@ -6,9 +6,25 @@ import android.net.Uri;
 
 final class Prefs {
     static final String IP = "ip", PORT = "port", USER = "user", PASS = "pass", PATH = "path", TCP = "tcp",
-            AUTOSTART = "autostart";
+            AUTOSTART = "autostart",
+            MODE = "mode", BACKUP_TEXT = "backup_text", BACKUP_FILE = "backup_file", BACKUP_NAME = "backup_name";
+
+    /** Modos de pantalla. */
+    static final String MODE_AUTO = "auto", MODE_BACKUP = "respaldo", MODE_CAMERA = "camara";
+
+    static final String DEFAULT_BACKUP_TEXT = "Cámara no disponible";
 
     private Prefs() {}
+
+    static String mode(Context c) {
+        String m = get(c).getString(MODE, MODE_AUTO);
+        return MODE_BACKUP.equals(m) || MODE_CAMERA.equals(m) ? m : MODE_AUTO;
+    }
+
+    static String backupText(Context c) {
+        String t = get(c).getString(BACKUP_TEXT, "");
+        return t.trim().isEmpty() ? DEFAULT_BACKUP_TEXT : t;
+    }
 
     static SharedPreferences get(Context c) {
         return c.getSharedPreferences("camara", Context.MODE_PRIVATE);

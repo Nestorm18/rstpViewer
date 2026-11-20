@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTSP Viewer · Control</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --fg:#1d2330; --muted:#677084; --line:#dde1e8; --accent:#0277bd; --ok:#2e7d32; --bad:#c62828; --warn:#b26a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1e232b; --fg:#e8ebf0; --muted:#98a1b2; --line:#323946; --accent:#4fb3f6; --ok:#66bb6a; --bad:#ef5350; --warn:#ffb74d; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:0; }
+  dt { color:var(--muted); } dd { margin:0; overflow-wrap:anywhere; }
+  .ok { color:var(--ok); font-weight:600; } .bad { color:var(--bad); font-weight:600; } .warn { color:var(--warn); font-weight:600; }
+  textarea, select, input[type=file] { width:100%; font:inherit; color:inherit; background:transparent; border:1px solid var(--line); border-radius:6px; padding:8px; }
+  textarea { min-height:70px; resize:vertical; }
+  button { font:inherit; border:0; border-radius:6px; padding:8px 14px; background:var(--accent); color:#fff; cursor:pointer; margin-top:8px; }
+  button.secondary { background:transparent; color:var(--bad); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  progress { width:100%; height:10px; margin-top:8px; }
+  #msg { min-height:1.4em; color:var(--muted); }
+  #msg.err { color:var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>RTSP Viewer · Control</h1>
+  <p id="msg"></p>
+
+  <section>
+    <h2>Estado</h2>
+    <dl>
+      <dt>Cámara</dt><dd id="s-cam">–</dd>
+      <dt>En pantalla</dt><dd id="s-show">–</dd>
+      <dt>Modo</dt><dd id="s-mode">–</dd>
+      <dt>Archivo</dt><dd id="s-file">–</dd>
+      <dt>Espacio libre</dt><dd id="s-free">–</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Modo</h2>
+    <select id="mode">
+      <option value="auto">Automático (respaldo si falla la cámara)</option>
+      <option value="respaldo">Siempre respaldo</option>
+      <option value="camara">Siempre cámara</option>
+    </select>
+  </section>
+
+  <section>
+    <h2>Archivo de respaldo</h2>
+    <input type="file" id="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mkv,.webm">
+    <button id="send">Enviar archivo</button>
+    <button id="del" class="secondary">Borrar archivo de respaldo</button>
+    <progress id="prog" max="100" value="0" hidden></progress>
+  </section>
+
+  <section>
+    <h2>Texto de respaldo (si no hay archivo)</h2>
+    <textarea id="text" maxlength="500"></textarea>
+    <button id="send-text">Enviar texto</button>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const CAM = { ok:['Funciona','ok'], fallo:['Fallo','bad'], conectando:['Conectando…','warn'], parada:['Parada (modo respaldo)',''] };
+const SHOW = { camara:'Cámara', respaldo:'Respaldo', ninguno:'Nada (app en segundo plano)' };
+let textTouched = false, modeBusy = false;
+
+function msg(t, err) { $('msg').textContent = t || ''; $('msg').className = err ? 'err' : ''; }
+function mb(b) { return (b / 1048576).toFixed(1) + ' MB'; }
+
+function render(s) {
+  const c = CAM[s.camera] || [s.camera, ''];
+  $('s-cam').textContent = c[0]; $('s-cam').className = c[1];
+  $('s-show').textContent = SHOW[s.showing] || s.showing;
+  $('s-mode').textContent = $('mode').querySelector(`option[value="${s.mode}"]`)?.textContent || s.mode;
+  $('s-file').textContent = s.file ? `${s.file.name} (${s.file.type}, ${mb(s.file.size)})` : 'Ninguno (se muestra el texto)';
+  $('s-free').textContent = mb(s.freeBytes);
+  if (!modeBusy) $('mode').value = s.mode;
+  if (!textTouched) $('text').value = s.text;
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method:'POST', body });
+  const j = await r.json().catch(() => ({ error:'Respuesta no válida' }));
+  if (!r.ok) throw new Error(j.error || ('Error ' + r.status));
+  return j;
+}
+
+async function refresh() {
+  try { render(await api('/api/status')); if ($('msg').className === 'err') msg(''); }
+  catch (e) { msg('No se puede contactar con la app: ' + e.message, true); }
+}
+
+$('mode').onchange = async () => {
+  modeBusy = true;
+  try { render(await api('/api/mode', $('mode').value)); msg('Modo cambiado'); }
+  catch (e) { msg(e.message, true); }
+  modeBusy = false;
+};
+
+$('text').oninput = () => { textTouched = true; };
+$('send-text').onclick = async () => {
+  try { render(await api('/api/text', $('text').value)); textTouched = false; msg('Texto enviado'); }
+  catch (e) { msg(e.message, true); }
+};
+
+$('del').onclick = async () => {
+  if (!confirm('¿Borrar el archivo de respaldo?')) return;
+  try { render(await api('/api/delete', '')); msg('Archivo borrado'); }
+  catch (e) { msg(e.message, true); }
+};
+
+$('send').onclick = () => {
+  const f = $('file').files[0];
+  if (!f) { msg('Elige primero un archivo', true); return; }
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload?name=' + encodeURIComponent(f.name));
+  $('prog').hidden = false; $('prog').value = 0; $('send').disabled = true;
+  xhr.upload.onprogress = e => { if (e.lengthComputable) $('prog').value = 100 * e.loaded / e.total; };
+  xhr.onload = () => {
+    $('send').disabled = false; $('prog').hidden = true;
+    let j = {}; try { j = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status === 200) { render(j); msg('Archivo enviado'); } else msg(j.error || ('Error ' + xhr.status), true);
+  };
+  xhr.onerror = () => { $('send').disabled = false; $('prog').hidden = true; msg('Se cortó la conexión durante la subida', true); };
+  msg('Enviando ' + f.name + '…');
+  xhr.send(f);
+};
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

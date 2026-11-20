@@ -10,7 +10,7 @@ import android.widget.Toast;
 
 public class SettingsActivity extends Activity {
 
-    private EditText ip, port, user, pass, path;
+    private EditText ip, port, user, pass, path, backupText;
     private CheckBox tcp, autostart;
     private TextView preview;
 
@@ -26,7 +26,13 @@ public class SettingsActivity extends Activity {
         path = findViewById(R.id.path);
         tcp = findViewById(R.id.tcp);
         autostart = findViewById(R.id.autostart);
+        backupText = findViewById(R.id.backup_text);
         preview = findViewById(R.id.preview);
+
+        String localIp = App.localIp();
+        ((TextView) findViewById(R.id.remote_url)).setText(localIp == null
+                ? getString(R.string.remote_url_none)
+                : getString(R.string.remote_url_fmt, localIp, App.HTTP_PORT));
 
         SharedPreferences p = Prefs.get(this);
         ip.setText(p.getString(Prefs.IP, ""));
@@ -36,6 +42,7 @@ public class SettingsActivity extends Activity {
         path.setText(p.getString(Prefs.PATH, ""));
         tcp.setChecked(p.getBoolean(Prefs.TCP, true));
         autostart.setChecked(Prefs.autoStart(this));
+        backupText.setText(p.getString(Prefs.BACKUP_TEXT, ""));
         updatePreview();
 
         findViewById(R.id.save).setOnClickListener(v -> save());
@@ -56,6 +63,7 @@ public class SettingsActivity extends Activity {
                 .putString(Prefs.PATH, path.getText().toString().trim())
                 .putBoolean(Prefs.TCP, tcp.isChecked())
                 .putBoolean(Prefs.AUTOSTART, autostart.isChecked())
+                .putString(Prefs.BACKUP_TEXT, backupText.getText().toString().trim())
                 .apply();
         Toast.makeText(this, R.string.saved, Toast.LENGTH_SHORT).show();
         finish();

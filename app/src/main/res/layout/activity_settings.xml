@@ -57,6 +57,14 @@
             android:textColor="#9E9E9E"
             android:textSize="13sp" />
 
+        <TextView style="@style/Label" android:text="@string/backup_text" />
+        <EditText
+            android:id="@+id/backup_text"
+            style="@style/Field"
+            android:hint="@string/backup_text_hint"
+            android:inputType="textCapSentences"
+            android:maxLength="500" />
+
         <CheckBox
             android:id="@+id/tcp"
             android:layout_width="wrap_content"
@@ -89,5 +97,13 @@
             android:layout_marginTop="12dp"
             android:textColor="#757575"
             android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/remote_url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#29B6F6"
+            android:textSize="16sp" />
     </LinearLayout>
 </ScrollView>

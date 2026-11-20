@@ -2,6 +2,8 @@ package com.rtspviewer.tv;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -9,9 +11,11 @@ import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
@@ -21,10 +25,19 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import androidx.media3.ui.PlayerView;
 
-/** Muestra la cámara a pantalla completa. OK / Menú en el control abre la configuración. */
+import java.io.File;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * Muestra la cámara a pantalla completa y, según el modo, un contenido de respaldo
+ * (vídeo en bucle, imagen o texto). OK / Menú en el control abre la configuración.
+ */
 public class MainActivity extends Activity {
 
     private static final long RETRY_MS = 5000;
+    /** En modo auto, si la cámara no está lista en este tiempo se muestra el respaldo. */
+    private static final long CONNECT_TIMEOUT_MS = 10_000;
 
     // Baja latencia: empezar a mostrar con muy poco vídeo en el buffer.
     private static final int MIN_BUFFER_MS = 500;
@@ -38,39 +51,71 @@ public class MainActivity extends Activity {
     private static final long CATCH_UP_UNTIL_MS = 250;
     private static final float CATCH_UP_SPEED = 1.25f;
 
+    /** Tamaño máximo al que se decodifican las imágenes de respaldo. */
+    private static final int MAX_IMAGE_W = 1920, MAX_IMAGE_H = 1080;
+
+    private App app;
     private PlayerView playerView;
     private TextView status;
+    private View backupLayer;
+    private PlayerView backupVideo;
+    private ImageView backupImage;
+    private TextView backupText;
+
     private ExoPlayer player;
+    private ExoPlayer backupPlayer;
     private boolean catchingUp;
+    private boolean backupShown;
+    /** Identifica el contenido de respaldo cargado, para no recargarlo si no cambia. */
+    private String loadedBackupKey;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService decoder = Executors.newSingleThreadExecutor();
     private final Runnable retry = this::startPlayer;
     private final Runnable latencyCheck = this::checkLatency;
+    private final Runnable connectTimeout = this::onConnectTimeout;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
+        app = App.get(this);
         playerView = findViewById(R.id.player_view);
         status = findViewById(R.id.status);
+        backupLayer = findViewById(R.id.backup_layer);
+        backupVideo = findViewById(R.id.backup_video);
+        backupImage = findViewById(R.id.backup_image);
+        backupText = findViewById(R.id.backup_text);
     }
 
     @Override
     protected void onStart() {
         super.onStart();
         hideSystemUi();
-        if (!Prefs.isConfigured(this)) {
+        if (!Prefs.isConfigured(this) && !Prefs.MODE_BACKUP.equals(Prefs.mode(this))) {
             openSettings();
             return;
         }
-        startPlayer();
+        app.setConfigListener(this::applyConfig);
+        applyConfig();
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        handler.removeCallbacks(retry);
+        app.setConfigListener(null);
+        handler.removeCallbacksAndMessages(null);
         releasePlayer();
+        hideBackup();
+        app.cameraState = App.CAM_STOPPED;
+        app.showing = App.SHOW_NONE;
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        decoder.shutdownNow();
     }
 
     @Override
@@ -96,10 +141,57 @@ public class MainActivity extends Activity {
         startActivity(new Intent(this, SettingsActivity.class));
     }
 
+    // ---------------------------------------------------------------- modo
+
+    /** Aplica el modo y el contenido de respaldo actuales (al iniciar y cuando cambian por red). */
+    private void applyConfig() {
+        String mode = Prefs.mode(this);
+        if (Prefs.MODE_BACKUP.equals(mode)) {
+            handler.removeCallbacks(retry);
+            handler.removeCallbacks(connectTimeout);
+            releasePlayer();
+            app.cameraState = App.CAM_STOPPED;
+            status.setVisibility(View.GONE);
+            showBackup();
+            return;
+        }
+
+        if (player == null) {
+            if (Prefs.isConfigured(this)) {
+                startPlayer();
+            } else {
+                app.cameraState = App.CAM_FAIL;
+            }
+        }
+
+        if (Prefs.MODE_CAMERA.equals(mode)) {
+            hideBackup();
+            if (App.CAM_FAIL.equals(app.cameraState)) showStatus(getString(R.string.reconnecting));
+        } else if (App.CAM_FAIL.equals(app.cameraState)) {
+            showBackup(); // auto con la cámara caída
+        } else if (App.CAM_OK.equals(app.cameraState)) {
+            hideBackup();
+        }
+        // auto + conectando: decide onConnectTimeout / onPlaybackStateChanged
+
+        if (backupShown) loadBackupContent();
+    }
+
+    private boolean isAuto() {
+        return Prefs.MODE_AUTO.equals(Prefs.mode(this));
+    }
+
+    // ---------------------------------------------------------------- cámara
+
     private void startPlayer() {
         handler.removeCallbacks(retry);
         releasePlayer();
-        showStatus(getString(R.string.connecting));
+        // Durante los reintentos tras un fallo se sigue informando "fallo" hasta que vuelva.
+        if (!App.CAM_FAIL.equals(app.cameraState)) app.cameraState = App.CAM_CONNECTING;
+        if (!backupShown) {
+            app.showing = App.SHOW_CAMERA;
+            showStatus(getString(R.string.connecting));
+        }
 
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
                 .setBufferDurationsMs(MIN_BUFFER_MS, MAX_BUFFER_MS, START_BUFFER_MS, REBUFFER_MS)
@@ -118,25 +210,50 @@ public class MainActivity extends Activity {
             @Override
             public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
-                    status.setVisibility(View.GONE);
-                    handler.removeCallbacks(latencyCheck);
-                    handler.postDelayed(latencyCheck, LATENCY_CHECK_MS);
+                    onCameraReady();
                 } else if (state == Player.STATE_ENDED) {
-                    showStatus(getString(R.string.reconnecting));
-                    scheduleRetry();
+                    onCameraFailed(getString(R.string.reconnecting));
                 }
             }
 
             @Override
             public void onPlayerError(@NonNull PlaybackException error) {
-                showStatus(getString(R.string.error_fmt, error.getErrorCodeName()));
-                scheduleRetry();
+                onCameraFailed(getString(R.string.error_fmt, error.getErrorCodeName()));
             }
         });
 
         player.setMediaSource(source);
         player.setPlayWhenReady(true);
         player.prepare();
+
+        handler.removeCallbacks(connectTimeout);
+        handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS);
+    }
+
+    private void onCameraReady() {
+        handler.removeCallbacks(connectTimeout);
+        app.cameraState = App.CAM_OK;
+        status.setVisibility(View.GONE);
+        if (!Prefs.MODE_BACKUP.equals(Prefs.mode(this))) hideBackup();
+        handler.removeCallbacks(latencyCheck);
+        handler.postDelayed(latencyCheck, LATENCY_CHECK_MS);
+    }
+
+    private void onCameraFailed(String message) {
+        handler.removeCallbacks(connectTimeout);
+        app.cameraState = App.CAM_FAIL;
+        if (isAuto()) {
+            showBackup();
+        } else {
+            showStatus(message);
+        }
+        scheduleRetry();
+    }
+
+    /** La cámara no ha llegado a estar lista a tiempo: tratarlo como fallo y reintentar. */
+    private void onConnectTimeout() {
+        if (player != null && player.getPlaybackState() == Player.STATE_READY) return;
+        onCameraFailed(getString(R.string.reconnecting));
     }
 
     private void scheduleRetry() {
@@ -166,6 +283,139 @@ public class MainActivity extends Activity {
         }
         playerView.setPlayer(null);
     }
+
+    // ---------------------------------------------------------------- respaldo
+
+    private void showBackup() {
+        app.showing = App.SHOW_BACKUP;
+        status.setVisibility(View.GONE);
+        if (!backupShown) {
+            backupShown = true;
+            backupLayer.setVisibility(View.VISIBLE);
+        }
+        loadBackupContent();
+    }
+
+    private void hideBackup() {
+        app.showing = App.SHOW_CAMERA;
+        if (!backupShown) return;
+        backupShown = false;
+        backupLayer.setVisibility(View.GONE);
+        releaseBackupPlayer();
+        backupImage.setImageDrawable(null);
+        loadedBackupKey = null;
+    }
+
+    /** Carga el archivo o el texto de respaldo si ha cambiado desde la última vez. */
+    private void loadBackupContent() {
+        File file = Backup.current(this);
+        String text = Prefs.backupText(this);
+        String key = file == null ? "text:" + text : "file:" + file.getAbsolutePath();
+        if (key.equals(loadedBackupKey)) return;
+        loadedBackupKey = key;
+
+        releaseBackupPlayer();
+        backupImage.setImageDrawable(null);
+
+        if (file == null) {
+            showBackupText(text);
+        } else if (Backup.TYPE_VIDEO.equals(Backup.type(file))) {
+            showBackupVideo(file);
+        } else {
+            showBackupImage(file, key);
+        }
+    }
+
+    private void showBackupText(String text) {
+        backupVideo.setVisibility(View.GONE);
+        backupImage.setVisibility(View.GONE);
+        backupText.setText(text);
+        backupText.setVisibility(View.VISIBLE);
+    }
+
+    private void showBackupVideo(File file) {
+        backupImage.setVisibility(View.GONE);
+        backupText.setVisibility(View.GONE);
+        backupVideo.setVisibility(View.VISIBLE);
+
+        backupPlayer = new ExoPlayer.Builder(this).build();
+        backupPlayer.setTrackSelectionParameters(backupPlayer.getTrackSelectionParameters().buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                .build());
+        backupPlayer.setVolume(0f);
+        backupPlayer.setRepeatMode(Player.REPEAT_MODE_ONE);
+        backupPlayer.addListener(new Player.Listener() {
+            @Override
+            public void onPlayerError(@NonNull PlaybackException error) {
+                // Vídeo ilegible: mostrar el texto en su lugar.
+                releaseBackupPlayer();
+                showBackupText(Prefs.backupText(MainActivity.this));
+            }
+        });
+        backupVideo.setPlayer(backupPlayer);
+        backupPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)));
+        backupPlayer.setPlayWhenReady(true);
+        backupPlayer.prepare();
+    }
+
+    private void showBackupImage(File file, String key) {
+        backupVideo.setVisibility(View.GONE);
+        backupText.setVisibility(View.GONE);
+        backupImage.setVisibility(View.VISIBLE);
+        decoder.execute(() -> {
+            Bitmap bmp = decodeScaled(file);
+            handler.post(() -> {
+                if (!key.equals(loadedBackupKey) || !backupShown) {
+                    if (bmp != null) bmp.recycle();
+                    return;
+                }
+                if (bmp == null) {
+                    showBackupText(Prefs.backupText(this));
+                } else {
+                    backupImage.setImageBitmap(bmp);
+                }
+            });
+        });
+    }
+
+    /** Decodifica la imagen reducida para que quepa en 1920x1080 sin agotar la memoria. */
+    private static Bitmap decodeScaled(File file) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getPath(), bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+
+        int sample = 1;
+        while (bounds.outWidth / sample > MAX_IMAGE_W || bounds.outHeight / sample > MAX_IMAGE_H) sample *= 2;
+
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = sample;
+        try {
+            Bitmap bmp = BitmapFactory.decodeFile(file.getPath(), opts);
+            if (bmp == null) return null;
+            // Ajuste fino: inSampleSize solo reduce en potencias de 2.
+            float scale = Math.min((float) MAX_IMAGE_W / bmp.getWidth(), (float) MAX_IMAGE_H / bmp.getHeight());
+            if (scale < 1f) {
+                Bitmap scaled = Bitmap.createScaledBitmap(bmp,
+                        Math.round(bmp.getWidth() * scale), Math.round(bmp.getHeight() * scale), true);
+                if (scaled != bmp) bmp.recycle();
+                bmp = scaled;
+            }
+            return bmp;
+        } catch (OutOfMemoryError e) {
+            return null;
+        }
+    }
+
+    private void releaseBackupPlayer() {
+        if (backupPlayer != null) {
+            backupPlayer.release();
+            backupPlayer = null;
+        }
+        backupVideo.setPlayer(null);
+    }
+
+    // ---------------------------------------------------------------- UI
 
     private void showStatus(String text) {
         status.setText(text);

@@ -21,3 +21,10 @@ captures/
 # SO
 .DS_Store
 Thumbs.db
+
+# Programa de PC
+pc/rtspviewer_control.json
+pc/build/
+pc/dist/
+pc/*.spec
+__pycache__/
