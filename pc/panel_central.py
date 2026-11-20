@@ -809,8 +809,8 @@ PAGE = r"""<!doctype html>
         <button data-mode="esquela">Esquelas</button>
         <button data-mode="imagen">Imagen</button>
       </div>
-      <p class="hint">Cambia lo que se ve en los equipos marcados. Cada equipo guarda sus esquelas y su imagen,
-        así que se puede cambiar entre las tres sin volver a enviarlas. Al enviar esquelas o una imagen, se muestran al momento.</p>
+      <p class="hint">Cambia lo que se ve en los equipos marcados. <b>Esquelas</b> envía lo que hay en el editor de abajo
+        y lo muestra al momento. <b>Imagen</b> muestra la imagen que ya tiene cada equipo (para enviar otra, usa «Enviar y mostrar»).</p>
     </section>
 
     <section>
@@ -828,8 +828,8 @@ PAGE = r"""<!doctype html>
 
   <section style="margin-top:14px">
     <h2>Esquelas</h2>
-    <p class="hint" style="margin:0 0 12px">Crea las diapositivas aquí y envíalas: se muestran al momento en los equipos marcados, en bucle,
-      todas con el mismo tiempo (<input type="number" id="slide-secs" min="1" max="600" style="width:64px"> s cada una).</p>
+    <p class="hint" style="margin:0 0 12px">Prepara aquí las esquelas y pulsa <b>Mostrar → Esquelas</b> para enviarlas y mostrarlas
+      en los equipos marcados. Pasan en bucle, todas con el mismo tiempo (<input type="number" id="slide-secs" min="1" max="600" style="width:64px"> s cada una).</p>
     <div class="ed">
       <div>
         <div class="row" style="margin-bottom:8px">
@@ -842,7 +842,6 @@ PAGE = r"""<!doctype html>
         <div id="slide-form"></div>
         <canvas id="preview" width="1920" height="1080"></canvas>
         <div class="row" style="margin-top:10px">
-          <button id="send-slides">Enviar y mostrar en los equipos marcados</button>
           <button class="danger" data-delete="esquela">Borrar esquelas de los equipos</button>
           <button id="example-slides" class="ghost">Cargar ejemplo</button>
           <button id="clear-slides" class="ghost">Vaciar el editor</button>
@@ -917,7 +916,8 @@ function render() {
   if (typeof slideSecsTouched !== 'undefined' && !slideSecsTouched && state.seconds_per_slide) $('slide-secs').value = state.seconds_per_slide;
   if (state.notice && !uploading) notice(state.notice.text, state.notice.state === 'error' ? 'bad' : state.notice.state === 'ok' ? 'ok' : 'warn');
   $('send-file').disabled = uploading || state.busy;
-  if ($('send-slides')) $('send-slides').disabled = state.busy;
+  const esqBtn = document.querySelector('[data-mode=esquela]');
+  if (esqBtn && !sendingSlides) esqBtn.disabled = state.busy;
 }
 
 async function refresh() {
@@ -958,7 +958,9 @@ $('add').onclick = () => action(async () => {
 });
 
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
-  const list = ips(); if (list) action(() => post('/api/mode', { ips: list, mode: b.dataset.mode }));
+  const list = ips(); if (!list) return;
+  if (b.dataset.mode === 'esquela') return sendSlides(list);  // envía el editor y lo muestra
+  action(() => post('/api/mode', { ips: list, mode: b.dataset.mode }));
 });
 $('send-text').onclick = () => { const list = ips(); if (list) action(() => post('/api/text', { ips: list, text: $('text').value })); };
 document.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
@@ -1326,12 +1328,16 @@ $('clear-slides').onclick = () => {
 let slideSecsTouched = false;
 $('slide-secs').oninput = () => { slideSecsTouched = true; };
 
-$('send-slides').onclick = async () => {
-  const list = ips(); if (!list) return;
+let sendingSlides = false;
+// Dibuja las diapositivas del editor, las envía a los equipos y las muestra al momento.
+async function sendSlides(list) {
   const secs = parseInt($('slide-secs').value, 10);
   if (!(secs >= 1 && secs <= 600)) { notice('Los segundos por diapositiva deben estar entre 1 y 600.', 'bad'); return; }
   if (slides.some(s => s.type === 'imagen' && !s.image)) { notice('Hay una diapositiva de imagen sin imagen elegida.', 'bad'); return; }
-  $('send-slides').disabled = true; $('slides-prog').hidden = false; $('slides-prog').value = 0;
+  const dudosa = slides.some(s => s.type === 'esquela' && (!s.name.trim() || s.name.trim() === 'Dña. Nombre Apellido Apellido'));
+  if (dudosa && !confirm('Alguna esquela no tiene nombre o sigue con el nombre de ejemplo. ¿Enviarla igualmente?')) return;
+  const btn = document.querySelector('[data-mode=esquela]');
+  sendingSlides = true; btn.disabled = true; $('slides-prog').hidden = false; $('slides-prog').value = 0;
   try {
     const big = document.createElement('canvas'); big.width = W; big.height = H;
     const out = [];
@@ -1346,8 +1352,8 @@ $('send-slides').onclick = async () => {
     notice(`Enviando ${out.length} diapositiva(s) a ${list.length} equipo(s)…`, 'warn');
     await refresh();
   } catch (e) { notice(e.message, 'bad'); }
-  $('send-slides').disabled = false; $('slides-prog').hidden = true;
-};
+  sendingSlides = false; btn.disabled = false; $('slides-prog').hidden = true;
+}
 
 renderEditor();
 
