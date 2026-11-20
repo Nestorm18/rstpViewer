@@ -1,11 +1,11 @@
 @echo off
-rem Crea RTSPViewerControl.exe (un solo archivo, sin consola) con PyInstaller.
+rem Crea PanelCentral.exe (un solo archivo) con PyInstaller.
 rem Requiere Python 3 instalado. El .exe queda en la carpeta dist\.
 cd /d "%~dp0"
 python -m pip install --upgrade pyinstaller || goto :error
-python -m PyInstaller --onefile --noconsole --name RTSPViewerControl rtspviewer_control.pyw || goto :error
+python -m PyInstaller --onefile --console --name PanelCentral panel_central.py || goto :error
 echo.
-echo Listo: dist\RTSPViewerControl.exe
+echo Listo: dist\PanelCentral.exe
 pause
 exit /b 0
 

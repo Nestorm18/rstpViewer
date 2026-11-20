@@ -82,6 +82,27 @@
             android:textColor="#FFFFFF"
             android:textSize="18sp" />
 
+        <LinearLayout
+            android:id="@+id/autostart_permission"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/grant_autostart_help"
+                android:textColor="#FFB74D"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/grant_autostart"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/grant_autostart" />
+        </LinearLayout>
+
         <Button
             android:id="@+id/save"
             android:layout_width="match_parent"

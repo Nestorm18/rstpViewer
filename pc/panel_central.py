@@ -1,0 +1,917 @@
+"""
+RTSP Viewer · Panel central
+
+Servidor web para Windows que gestiona a la vez todos los equipos (TV sticks y
+tablets) con la app RTSP Viewer de la red local. Solo usa la biblioteca estándar.
+
+    python panel_central.py           → abre http://localhost:8000 en el navegador
+
+La lista de equipos y los ajustes se guardan en panel_central.json junto a este
+archivo (o junto al .exe). Los equipos no dependen de este servidor: cada uno guarda
+su archivo, su texto y su modo, así que el PC se puede apagar después.
+"""
+
+import http.client
+import ipaddress
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+import webbrowser
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+APP_ID = "RTSPViewer"
+DEVICE_PORT = 8080
+POLL_SECONDS = 4
+DEVICE_TIMEOUT = 4
+SCAN_TIMEOUT = 0.8
+CHUNK = 256 * 1024
+SPACE_MARGIN = 50 * 1048576
+
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+VIDEO_EXT = {".mp4", ".mkv", ".webm"}
+PPT_EXT = {".pptx", ".ppt", ".ppsx", ".pps"}
+
+
+def base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+CONFIG_PATH = os.path.join(base_dir(), "panel_central.json")
+
+
+def mb(n):
+    return f"{n / 1048576:.1f} MB"
+
+
+# =========================================================================== configuración
+
+class Config:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = {"port": 8000, "seconds_per_slide": 8, "open_browser": True, "devices": []}
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                self.data.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+        self.save()
+
+    def save(self):
+        tmp = CONFIG_PATH + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, CONFIG_PATH)
+        except OSError as e:
+            print("No se pudo guardar la configuración:", e)
+
+    def devices(self):
+        with self.lock:
+            return [dict(d) for d in self.data["devices"]]
+
+    def add(self, ip, name=""):
+        with self.lock:
+            if any(d["ip"] == ip for d in self.data["devices"]):
+                return False
+            self.data["devices"].append({"ip": ip, "name": name})
+            self.save()
+            return True
+
+    def remove(self, ip):
+        with self.lock:
+            self.data["devices"] = [d for d in self.data["devices"] if d["ip"] != ip]
+            self.save()
+
+    def rename(self, ip, name):
+        with self.lock:
+            for d in self.data["devices"]:
+                if d["ip"] == ip:
+                    d["name"] = name
+            self.save()
+
+    def get(self, key):
+        with self.lock:
+            return self.data.get(key)
+
+    def set(self, key, value):
+        with self.lock:
+            self.data[key] = value
+            self.save()
+
+
+CFG = Config()
+
+
+# =========================================================================== acceso a los equipos
+
+class DeviceError(Exception):
+    """Error con un mensaje listo para mostrar."""
+
+
+def friendly(exc):
+    if isinstance(exc, DeviceError):
+        return str(exc)
+    if isinstance(exc, socket.timeout):
+        return "No responde (tiempo agotado)"
+    if isinstance(exc, ConnectionRefusedError):
+        return "Rechaza la conexión: ¿está abierta la app?"
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError, http.client.RemoteDisconnected)):
+        return "Se cortó la conexión"
+    if isinstance(exc, OSError):
+        return f"No se puede conectar ({exc.strerror or exc})"
+    return f"Error inesperado: {exc}"
+
+
+def read_json(resp):
+    raw = resp.read()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise DeviceError(f"Respuesta no válida (HTTP {resp.status})")
+    if resp.status != 200:
+        raise DeviceError(data.get("error") or f"Error HTTP {resp.status}")
+    return data
+
+
+def dev_get(ip, path, timeout=DEVICE_TIMEOUT):
+    conn = http.client.HTTPConnection(ip, DEVICE_PORT, timeout=timeout)
+    try:
+        conn.request("GET", path)
+        return read_json(conn.getresponse())
+    finally:
+        conn.close()
+
+
+def dev_post(ip, path, body=b""):
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    conn = http.client.HTTPConnection(ip, DEVICE_PORT, timeout=DEVICE_TIMEOUT + 4)
+    try:
+        conn.request("POST", path, body=body, headers={"Content-Type": "text/plain; charset=utf-8"})
+        return read_json(conn.getresponse())
+    finally:
+        conn.close()
+
+
+def dev_upload(ip, path, name, progress):
+    size = os.path.getsize(path)
+    conn = http.client.HTTPConnection(ip, DEVICE_PORT, timeout=60)
+    try:
+        conn.putrequest("POST", "/api/upload?name=" + urllib.parse.quote(name))
+        conn.putheader("Content-Type", "application/octet-stream")
+        conn.putheader("Content-Length", str(size))
+        conn.endheaders()
+        sent = 0
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    sent += len(chunk)
+                    progress(sent, size)
+        except (ConnectionResetError, BrokenPipeError):
+            pass  # el equipo puede cortar al rechazar el archivo: leer su mensaje
+        return read_json(conn.getresponse())
+    finally:
+        conn.close()
+
+
+# =========================================================================== estado en vivo
+
+class State:
+    """Último estado conocido de cada equipo y la tarea en curso o terminada en cada uno."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status = {}   # ip -> {"data": dict|None, "error": str|None, "time": float}
+        self.tasks = {}    # ip -> {"text": str, "state": "running"|"ok"|"error", "progress": float|None, "time": float}
+        self.notice = {"text": "", "state": "", "time": 0}
+        self.busy = False  # hay una subida en curso
+
+    def set_status(self, ip, data=None, error=None):
+        with self.lock:
+            self.status[ip] = {"data": data, "error": error, "time": time.time()}
+
+    def set_task(self, ip, text, state="running", progress=None):
+        with self.lock:
+            self.tasks[ip] = {"text": text, "state": state, "progress": progress, "time": time.time()}
+
+    def set_notice(self, text, state="running"):
+        with self.lock:
+            self.notice = {"text": text, "state": state, "time": time.time()}
+
+    def snapshot(self):
+        now = time.time()
+        devices = []
+        with self.lock:
+            for d in CFG.devices():
+                st = self.status.get(d["ip"], {})
+                task = self.tasks.get(d["ip"])
+                if task and task["state"] != "running" and now - task["time"] > 30:
+                    task = None  # los resultados se ven 30 s
+                devices.append({**d, "status": st.get("data"), "error": st.get("error"),
+                                "checked": st.get("time"), "task": task})
+            notice = self.notice if (self.notice["state"] == "running" or now - self.notice["time"] < 30) else None
+            return {"devices": devices, "notice": notice, "busy": self.busy,
+                    "seconds_per_slide": CFG.get("seconds_per_slide")}
+
+
+STATE = State()
+
+
+def poll_one(ip):
+    try:
+        data = dev_get(ip, "/api/status")
+        if data.get("app") != APP_ID:
+            raise DeviceError("En esa IP responde algo que no es RTSP Viewer")
+        STATE.set_status(ip, data=data)
+    except Exception as e:  # noqa: BLE001
+        STATE.set_status(ip, error=friendly(e))
+
+
+def poller():
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        while True:
+            ips = [d["ip"] for d in CFG.devices()]
+            list(ex.map(poll_one, ips))
+            time.sleep(POLL_SECONDS)
+
+
+# =========================================================================== acciones
+
+def run_on(ips, label, fn):
+    """Ejecuta fn(ip) en paralelo en cada equipo, anotando el resultado en su tarea."""
+    def one(ip):
+        STATE.set_task(ip, label + "…")
+        try:
+            data = fn(ip)
+            STATE.set_status(ip, data=data)
+            STATE.set_task(ip, label + ": hecho", "ok")
+        except Exception as e:  # noqa: BLE001
+            STATE.set_task(ip, friendly(e), "error")
+
+    def all_():
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            list(ex.map(one, ips))
+
+    threading.Thread(target=all_, daemon=True).start()
+
+
+def upload_job(src_path, name, ips, seconds, workdir):
+    try:
+        ext = os.path.splitext(name)[1].lower()
+        up_path, up_name = src_path, name
+        if ext in PPT_EXT:
+            for ip in ips:
+                STATE.set_task(ip, "Esperando la conversión del PowerPoint…")
+            STATE.set_notice(f"Convirtiendo «{name}» con PowerPoint… (puede tardar unos minutos)")
+            try:
+                up_path, n = convert_powerpoint(src_path, seconds, workdir)
+            except DeviceError as e:
+                STATE.set_notice(str(e), "error")
+                for ip in ips:
+                    STATE.set_task(ip, "No enviado: falló la conversión", "error")
+                return
+            up_name = os.path.basename(up_path)
+            kind = "imagen JPG" if n == 1 else f"vídeo MP4 ({n} diapositivas × {seconds} s)"
+            STATE.set_notice(f"«{name}» convertido a {kind}. Enviando…")
+        else:
+            STATE.set_notice(f"Enviando «{name}»…")
+
+        size = os.path.getsize(up_path)
+
+        def one(ip):
+            try:
+                st = dev_get(ip, "/api/status")
+                free = st.get("freeBytes", 0)
+                if size + SPACE_MARGIN > free:
+                    raise DeviceError(f"No cabe: ocupa {mb(size)} y quedan {mb(free)} libres")
+                last = [0.0]
+
+                def progress(sent, total):
+                    p = sent / total if total else 1
+                    if p - last[0] >= 0.01 or sent == total:
+                        last[0] = p
+                        STATE.set_task(ip, f"Enviando {int(p * 100)} %", progress=p)
+
+                STATE.set_task(ip, "Enviando 0 %", progress=0)
+                data = dev_upload(ip, up_path, up_name, progress)
+                STATE.set_status(ip, data=data)
+                STATE.set_task(ip, f"«{up_name}» enviado", "ok", 1)
+                return True
+            except Exception as e:  # noqa: BLE001
+                STATE.set_task(ip, friendly(e), "error")
+                return False
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            ok = sum(ex.map(one, ips))
+        fails = len(ips) - ok
+        STATE.set_notice(f"«{up_name}» enviado a {ok} de {len(ips)} equipos" + (f" ({fails} con error)" if fails else ""),
+                         "ok" if not fails else "error")
+    finally:
+        STATE.busy = False
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+# =========================================================================== PowerPoint
+
+PS_SCRIPT = r"""
+param([string]$In, [string]$OutDir, [int]$Seconds)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$code = 0
+$app = $null
+$pres = $null
+try {
+    try { $app = New-Object -ComObject PowerPoint.Application }
+    catch { throw "No se puede abrir PowerPoint en este PC. ¿Está instalado?" }
+    # ReadOnly, Untitled=false, WithWindow=false
+    $pres = $app.Presentations.Open($In, -1, 0, 0)
+    $n = $pres.Slides.Count
+    if ($n -lt 1) { throw "La presentación no tiene diapositivas." }
+    $base = [IO.Path]::GetFileNameWithoutExtension($In)
+    if ($n -eq 1) {
+        $w = 1920
+        $h = [int][Math]::Round(1920 * $pres.PageSetup.SlideHeight / $pres.PageSetup.SlideWidth)
+        $out = Join-Path $OutDir ($base + ".jpg")
+        if (Test-Path $out) { Remove-Item $out -Force }
+        $pres.Slides.Item(1).Export($out, "JPG", $w, $h)
+    } else {
+        $out = Join-Path $OutDir ($base + ".mp4")
+        if (Test-Path $out) { Remove-Item $out -Force }
+        # FileName, UseTimingsAndNarrations, DefaultSlideDuration, VertResolution, FramesPerSecond, Quality
+        $pres.CreateVideo($out, $false, $Seconds, 1080, 30, 85)
+        # 1 = en curso, 2 = en cola, 3 = terminado, 4 = fallido
+        while ($pres.CreateVideoStatus -eq 1 -or $pres.CreateVideoStatus -eq 2) { Start-Sleep -Milliseconds 500 }
+        if ($pres.CreateVideoStatus -ne 3) { throw "PowerPoint no pudo crear el vídeo." }
+    }
+    if (-not (Test-Path $out)) { throw "PowerPoint no generó el archivo." }
+    Write-Output ("OK|" + $n + "|" + $out)
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    $code = 1
+} finally {
+    if ($pres) { try { $pres.Close() } catch {} }
+    if ($app) {
+        # Cerrar PowerPoint solo si no tiene otras presentaciones abiertas por el usuario.
+        try { if ($app.Presentations.Count -eq 0) { $app.Quit() } } catch {}
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app)
+    }
+}
+exit $code
+"""
+
+
+def convert_powerpoint(path, seconds, workdir):
+    """1 diapositiva → JPG de 1920 px; varias → MP4 1080p. Devuelve (ruta, nº de diapositivas)."""
+    out_dir = os.path.join(workdir, "salida")
+    os.makedirs(out_dir, exist_ok=True)
+    script = os.path.join(workdir, "convertir.ps1")
+    with open(script, "w", encoding="utf-8-sig") as f:
+        f.write(PS_SCRIPT)
+    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+           "-In", os.path.abspath(path), "-OutDir", out_dir, "-Seconds", str(int(seconds))]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=3600,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        raise DeviceError("La conversión de PowerPoint tardó demasiado (más de 1 hora).")
+    except OSError as e:
+        raise DeviceError(f"No se pudo ejecutar PowerShell: {e}")
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith("OK|"):
+            _, n, result = line.split("|", 2)
+            return result.strip(), int(n)
+    err = r.stderr.decode("utf-8", "replace").strip()
+    raise DeviceError("Error al convertir el PowerPoint: " + (err.splitlines()[-1] if err else "sin detalles"))
+
+
+# =========================================================================== búsqueda
+
+def primary_ip():
+    """IP de la interfaz de red principal de este PC (o None)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))  # no envía nada; solo elige la interfaz de salida
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return None
+
+
+def local_networks():
+    ips = [primary_ip()] if primary_ip() else []
+    try:
+        ips += socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        pass
+    nets = []
+    for ip in ips:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if addr.is_private and not addr.is_loopback and not addr.is_link_local:
+            net = ipaddress.ip_network(f"{ip}/24", strict=False)
+            if net not in nets:
+                nets.append(net)
+    return nets
+
+
+def probe(ip):
+    try:
+        return str(ip) if dev_get(str(ip), "/api/status", timeout=SCAN_TIMEOUT).get("app") == APP_ID else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def scan_job():
+    nets = local_networks()
+    if not nets:
+        STATE.set_notice("No se encontró ninguna red local en este PC.", "error")
+        return
+    STATE.set_notice("Buscando equipos en " + ", ".join(str(n) for n in nets) + "…")
+    with ThreadPoolExecutor(max_workers=64) as ex:
+        found = [ip for net in nets for ip in ex.map(probe, net.hosts()) if ip]
+    new = [ip for ip in found if CFG.add(ip)]
+    for ip in new:
+        poll_one(ip)
+    if not found:
+        STATE.set_notice("No se encontró ningún equipo con RTSP Viewer abierto.", "error")
+    else:
+        STATE.set_notice(f"Encontrados {len(found)} equipos; {len(new)} nuevos añadidos a la lista.", "ok")
+
+
+# =========================================================================== servidor web
+
+def valid_ip(ip):
+    try:
+        return str(ipaddress.ip_address(ip.strip()))
+    except (ValueError, AttributeError):
+        return None
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "PanelCentral/1.0"
+
+    def log_message(self, fmt, *args):  # sin ruido en la consola
+        pass
+
+    # ---- utilidades
+
+    def allowed(self):
+        try:
+            a = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            return False
+        if a.is_private or a.is_loopback or a.is_link_local:
+            return True
+        self.send_json(403, {"error": "Solo se admiten conexiones desde la red local"})
+        return False
+
+    def send_json(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def body_json(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 1048576:
+            raise ValueError("Petición demasiado grande")
+        try:
+            return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except ValueError:
+            raise ValueError("JSON no válido")
+
+    def target_ips(self, body):
+        known = {d["ip"] for d in CFG.devices()}
+        ips = [ip for ip in body.get("ips", []) if ip in known]
+        if not ips:
+            raise ValueError("Marca al menos un equipo")
+        return ips
+
+    # ---- GET
+
+    def do_GET(self):
+        if not self.allowed():
+            return
+        path = urllib.parse.urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            body = PAGE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/api/state":
+            self.send_json(200, STATE.snapshot())
+        else:
+            self.send_json(404, {"error": "No encontrado"})
+
+    # ---- POST
+
+    def do_POST(self):
+        if not self.allowed():
+            return
+        url = urllib.parse.urlparse(self.path)
+        try:
+            if url.path == "/api/upload":
+                return self.upload(urllib.parse.parse_qs(url.query))
+            body = self.body_json()
+            handler = {
+                "/api/devices/add": self.add_device,
+                "/api/devices/remove": self.remove_device,
+                "/api/devices/rename": self.rename_device,
+                "/api/scan": self.scan,
+                "/api/mode": self.mode,
+                "/api/text": self.text,
+                "/api/delete": self.delete,
+                "/api/settings": self.settings,
+            }.get(url.path)
+            if not handler:
+                return self.send_json(404, {"error": "No encontrado"})
+            handler(body)
+        except ValueError as e:
+            self.send_json(400, {"error": str(e)})
+
+    def add_device(self, body):
+        ip = valid_ip(body.get("ip", ""))
+        if not ip:
+            raise ValueError("IP no válida")
+        name = str(body.get("name", "")).strip()[:60]
+        if not CFG.add(ip, name):
+            raise ValueError(f"{ip} ya está en la lista")
+        threading.Thread(target=poll_one, args=(ip,), daemon=True).start()
+        self.send_json(200, {"ok": True})
+
+    def remove_device(self, body):
+        CFG.remove(body.get("ip", ""))
+        self.send_json(200, {"ok": True})
+
+    def rename_device(self, body):
+        CFG.rename(body.get("ip", ""), str(body.get("name", "")).strip()[:60])
+        self.send_json(200, {"ok": True})
+
+    def scan(self, _):
+        threading.Thread(target=scan_job, daemon=True).start()
+        self.send_json(200, {"ok": True})
+
+    def mode(self, body):
+        mode = body.get("mode")
+        if mode not in ("camara", "respaldo"):
+            raise ValueError("Modo no válido")
+        label = "Mostrar cámara" if mode == "camara" else "Mostrar respaldo"
+        run_on(self.target_ips(body), label, lambda ip: dev_post(ip, "/api/mode", mode))
+        self.send_json(200, {"ok": True})
+
+    def text(self, body):
+        text = str(body.get("text", "")).strip()
+        if len(text) > 500:
+            raise ValueError("Texto demasiado largo (máximo 500 caracteres)")
+        run_on(self.target_ips(body), "Enviar texto", lambda ip: dev_post(ip, "/api/text", text))
+        self.send_json(200, {"ok": True})
+
+    def delete(self, body):
+        run_on(self.target_ips(body), "Borrar archivo", lambda ip: dev_post(ip, "/api/delete"))
+        self.send_json(200, {"ok": True})
+
+    def settings(self, body):
+        try:
+            secs = int(body.get("seconds_per_slide"))
+        except (TypeError, ValueError):
+            raise ValueError("Los segundos por diapositiva deben ser un número")
+        if not 1 <= secs <= 600:
+            raise ValueError("Los segundos por diapositiva deben estar entre 1 y 600")
+        CFG.set("seconds_per_slide", secs)
+        self.send_json(200, {"ok": True})
+
+    def upload(self, query):
+        name = os.path.basename((query.get("name") or [""])[0].replace("\\", "/")).strip()
+        ext = os.path.splitext(name)[1].lower()
+        length = int(self.headers.get("Content-Length") or 0)
+        known = {d["ip"] for d in CFG.devices()}
+        ips = [ip for ip in (query.get("ips") or [""])[0].split(",") if ip in known]
+        error = None
+        if not name or ext not in IMAGE_EXT | VIDEO_EXT | PPT_EXT:
+            error = "Formato no admitido. Usa JPG, PNG, WEBP, MP4, MKV, WEBM o PowerPoint"
+        elif length <= 0:
+            error = "El archivo está vacío"
+        elif not ips:
+            error = "Marca al menos un equipo"
+        elif STATE.busy:
+            error = "Ya hay un envío en curso; espera a que termine"
+        if error:
+            # Leer y descartar el cuerpo: si se cierra con datos sin leer, el navegador pierde la respuesta.
+            left = length
+            while left > 0:
+                chunk = self.rfile.read(min(CHUNK, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+            return self.send_json(400, {"error": error})
+
+        STATE.busy = True
+        workdir = tempfile.mkdtemp(prefix="panel_central_")
+        src = os.path.join(workdir, name)
+        try:
+            received = 0
+            with open(src, "wb") as f:
+                while received < length:
+                    chunk = self.rfile.read(min(CHUNK, length - received))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    received += len(chunk)
+            if received != length:
+                raise OSError("subida incompleta")
+        except OSError as e:
+            STATE.busy = False
+            shutil.rmtree(workdir, ignore_errors=True)
+            return self.send_json(400, {"error": f"No se recibió el archivo completo ({e})"})
+
+        seconds = int(CFG.get("seconds_per_slide") or 8)
+        threading.Thread(target=upload_job, args=(src, name, ips, seconds, workdir), daemon=True).start()
+        self.send_json(200, {"ok": True})
+
+
+# =========================================================================== página
+
+PAGE = r"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTSP Viewer · Panel central</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --fg:#1d2330; --muted:#677084; --line:#dde1e8; --accent:#0277bd;
+          --ok:#2e7d32; --bad:#c62828; --warn:#b26a00; --soft:#eef2f7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1e232b; --fg:#e8ebf0; --muted:#98a1b2;
+          --line:#323946; --accent:#4fb3f6; --ok:#66bb6a; --bad:#ef5350; --warn:#ffb74d; --soft:#262c36; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 16px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:0 0 10px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  input[type=text], input[type=number], textarea { font:inherit; color:inherit; background:transparent;
+          border:1px solid var(--line); border-radius:6px; padding:7px 9px; }
+  textarea { width:100%; min-height:60px; resize:vertical; }
+  button { font:inherit; border:1px solid transparent; border-radius:6px; padding:7px 13px; background:var(--accent);
+          color:#fff; cursor:pointer; white-space:nowrap; }
+  button.ghost { background:transparent; color:var(--fg); border-color:var(--line); }
+  button.danger { background:transparent; color:var(--bad); border-color:var(--line); }
+  button:disabled { opacity:.45; cursor:default; }
+  .table-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; min-width:880px; }
+  th, td { text-align:left; padding:8px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:12px; color:var(--muted); font-weight:600; }
+  tr.sel td { background:var(--soft); }
+  td.name { cursor:pointer; font-weight:600; } td.name:hover { text-decoration:underline dotted; }
+  .ip { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:baseline; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); } .muted { color:var(--muted); }
+  .task { font-size:13px; } .bar { height:5px; background:var(--line); border-radius:3px; margin-top:4px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); }
+  .x { background:transparent; color:var(--muted); border:0; padding:2px 6px; font-size:16px; }
+  #notice { min-height:1.4em; margin:0 0 12px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:820px) { .grid { grid-template-columns:1fr; } }
+  .grid section { margin:0; }
+  .hint { color:var(--muted); font-size:13px; margin:6px 0 0; }
+  progress { width:100%; height:8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RTSP Viewer · Panel central</h1>
+  <p class="sub">Gestiona a la vez todos los equipos de la red. Los cambios se aplican a los equipos <b>marcados</b>.</p>
+  <p id="notice"></p>
+
+  <section>
+    <h2>Equipos</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button id="scan" class="ghost">Buscar en la red</button>
+      <input type="text" id="new-ip" placeholder="IP (ej. 192.168.1.50)" size="18">
+      <input type="text" id="new-name" placeholder="Nombre (opcional)" size="20">
+      <button id="add" class="ghost">Añadir</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th style="width:28px"><input type="checkbox" id="all" title="Marcar todos"></th>
+          <th>Equipo</th><th>Conexión</th><th>Cámara</th><th>En pantalla</th><th>Archivo de respaldo</th>
+          <th>Libre</th><th style="width:210px">Última acción</th><th style="width:30px"></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="hint">Haz clic en el nombre de un equipo para cambiarlo.</p>
+  </section>
+
+  <div class="grid">
+    <section>
+      <h2>Qué mostrar</h2>
+      <div class="row">
+        <button data-mode="camara">Mostrar cámara</button>
+        <button data-mode="respaldo">Mostrar respaldo</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Archivo de respaldo</h2>
+      <div class="row">
+        <input type="file" id="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mkv,.webm,.pptx,.ppt,.ppsx,.pps">
+        <button id="send-file">Enviar</button>
+        <button id="delete" class="danger">Borrar archivo</button>
+      </div>
+      <progress id="prog" max="100" value="0" hidden></progress>
+      <p class="hint">Imagen, vídeo o PowerPoint. PowerPoint con 1 diapositiva → imagen; con varias → vídeo de
+        <input type="number" id="secs" min="1" max="600" style="width:64px"> s por diapositiva.</p>
+    </section>
+  </div>
+
+  <section style="margin-top:14px">
+    <h2>Texto de respaldo (se muestra si no hay archivo)</h2>
+    <textarea id="text" maxlength="500" placeholder="Cámara no disponible"></textarea>
+    <div class="row" style="margin-top:8px"><button id="send-text">Enviar texto</button></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const selected = new Set(JSON.parse(localStorage.getItem('sel') || '[]'));
+let state = { devices: [] }, uploading = false, secsTouched = false;
+
+const CAM = { ok:['Funciona','ok'], fallo:['Fallo','bad'], conectando:['Conectando…','warn'], parada:['Desconectada','muted'] };
+const SHOW = { camara:'Cámara', respaldo:'Respaldo', ninguno:'App cerrada' };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const mb = b => { const m = b / 1048576; return (m < 10 ? m.toFixed(1) : m.toFixed(0)) + ' MB'; };
+function saveSel() { try { localStorage.setItem('sel', JSON.stringify([...selected])); } catch (_) {} }
+
+function notice(text, kind) { $('notice').textContent = text || ''; $('notice').className = kind || ''; }
+
+async function post(url, body) {
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('Error ' + r.status));
+  return j;
+}
+
+function render() {
+  const known = new Set(state.devices.map(d => d.ip));
+  for (const ip of [...selected]) if (!known.has(ip)) selected.delete(ip);
+  const rows = state.devices.map(d => {
+    const s = d.status, on = !!s && !d.error;
+    const conn = d.checked == null ? '<span class="muted">Comprobando…</span>'
+      : on ? '<span class="ok"><span class="dot" style="background:currentColor"></span>Conectado</span>'
+           : `<span class="bad" title="${esc(d.error)}"><span class="dot" style="background:currentColor"></span>${esc(d.error)}</span>`;
+    const cam = on ? (CAM[s.camera] || [s.camera, '']) : ['–', 'muted'];
+    const file = on ? (s.file ? `${esc(s.file.name)} <span class="muted">(${s.file.type}, ${mb(s.file.size)})</span>`
+                               : `<span class="muted">Texto: «${esc(s.text)}»</span>`) : '<span class="muted">–</span>';
+    const t = d.task;
+    const task = !t ? '' : `<div class="task ${t.state === 'error' ? 'bad' : t.state === 'ok' ? 'ok' : ''}">${esc(t.text)}</div>`
+      + (t.state === 'running' && t.progress != null ? `<div class="bar"><i style="width:${(t.progress * 100).toFixed(0)}%"></i></div>` : '');
+    const sel = selected.has(d.ip);
+    return `<tr class="${sel ? 'sel' : ''}">
+      <td><input type="checkbox" data-ip="${esc(d.ip)}" aria-label="Marcar ${esc(d.name || d.ip)}" ${sel ? 'checked' : ''}></td>
+      <td class="name" data-rename="${esc(d.ip)}">${esc(d.name || d.ip)}<div class="ip">${d.name ? esc(d.ip) : ''}</div></td>
+      <td>${conn}</td>
+      <td class="${cam[1]}">${esc(cam[0])}</td>
+      <td>${on ? esc(SHOW[s.showing] || s.showing) : '<span class="muted">–</span>'}</td>
+      <td>${file}</td>
+      <td class="muted">${on ? mb(s.freeBytes) : '–'}</td>
+      <td>${task}</td>
+      <td><button class="x" data-remove="${esc(d.ip)}" title="Quitar de la lista">×</button></td>
+    </tr>`;
+  });
+  $('rows').innerHTML = rows.join('') ||
+    '<tr><td colspan="9" class="muted" style="padding:18px 8px">No hay equipos. Pulsa «Buscar en la red» o añade una IP.</td></tr>';
+  $('all').checked = state.devices.length > 0 && state.devices.every(d => selected.has(d.ip));
+  if (!secsTouched && state.seconds_per_slide) $('secs').value = state.seconds_per_slide;
+  if (state.notice && !uploading) notice(state.notice.text, state.notice.state === 'error' ? 'bad' : state.notice.state === 'ok' ? 'ok' : 'warn');
+  $('send-file').disabled = uploading || state.busy;
+}
+
+async function refresh() {
+  try { state = await (await fetch('/api/state')).json(); render(); }
+  catch (e) { notice('Se perdió la conexión con el panel central. ¿Sigue abierto el programa en el PC?', 'bad'); }
+}
+
+function ips() {
+  const list = state.devices.map(d => d.ip).filter(ip => selected.has(ip));
+  if (!list.length) { notice('Marca al menos un equipo en la lista.', 'bad'); return null; }
+  return list;
+}
+
+async function action(fn) { try { await fn(); await refresh(); } catch (e) { notice(e.message, 'bad'); } }
+
+$('rows').addEventListener('change', e => {
+  const ip = e.target.dataset.ip; if (!ip) return;
+  e.target.checked ? selected.add(ip) : selected.delete(ip); saveSel(); render();
+});
+$('rows').addEventListener('click', e => {
+  const rm = e.target.dataset.remove, rn = e.target.closest('[data-rename]')?.dataset.rename;
+  if (rm) {
+    if (confirm(`¿Quitar ${rm} de la lista? (No se cambia nada en el equipo)`))
+      action(() => post('/api/devices/remove', { ip: rm }));
+  } else if (rn) {
+    const d = state.devices.find(x => x.ip === rn);
+    const name = prompt(`Nombre para ${rn}:`, d?.name || '');
+    if (name !== null) action(() => post('/api/devices/rename', { ip: rn, name }));
+  }
+});
+$('all').onchange = () => { state.devices.forEach(d => $('all').checked ? selected.add(d.ip) : selected.delete(d.ip)); saveSel(); render(); };
+
+$('scan').onclick = () => action(() => post('/api/scan'));
+$('add').onclick = () => action(async () => {
+  await post('/api/devices/add', { ip: $('new-ip').value, name: $('new-name').value });
+  selected.add($('new-ip').value.trim()); saveSel();
+  $('new-ip').value = ''; $('new-name').value = ''; notice('Equipo añadido.', 'ok');
+});
+
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+  const list = ips(); if (list) action(() => post('/api/mode', { ips: list, mode: b.dataset.mode }));
+});
+$('send-text').onclick = () => { const list = ips(); if (list) action(() => post('/api/text', { ips: list, text: $('text').value })); };
+$('delete').onclick = () => {
+  const list = ips(); if (!list) return;
+  if (confirm(`¿Borrar el archivo de respaldo en ${list.length} equipo(s)?`)) action(() => post('/api/delete', { ips: list }));
+};
+$('secs').oninput = () => { secsTouched = true; };
+$('secs').onchange = () => action(async () => { await post('/api/settings', { seconds_per_slide: $('secs').value }); secsTouched = false; });
+
+$('send-file').onclick = () => {
+  const list = ips(); if (!list) return;
+  const f = $('file').files[0];
+  if (!f) { notice('Elige primero un archivo.', 'bad'); return; }
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload?name=' + encodeURIComponent(f.name) + '&ips=' + encodeURIComponent(list.join(',')));
+  uploading = true; $('prog').hidden = false; $('prog').value = 0; render();
+  notice(`Subiendo «${f.name}» al panel central…`, 'warn');
+  xhr.upload.onprogress = e => { if (e.lengthComputable) $('prog').value = 100 * e.loaded / e.total; };
+  const end = () => { uploading = false; $('prog').hidden = true; refresh(); };
+  xhr.onload = () => {
+    let j = {}; try { j = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status !== 200) notice(j.error || ('Error ' + xhr.status), 'bad');
+    end();
+  };
+  xhr.onerror = () => { notice('Se cortó la conexión al subir el archivo.', 'bad'); end(); };
+  xhr.send(f);
+};
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>
+"""
+
+
+# =========================================================================== arranque
+
+def main():
+    port = int(CFG.get("port") or 8000)
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    except OSError as e:
+        print(f"No se pudo abrir el puerto {port}: {e}")
+        print("¿Está ya abierto el panel central? Puedes cambiar el puerto en panel_central.json.")
+        input("Pulsa Intro para salir…")
+        return
+    server.daemon_threads = True
+    threading.Thread(target=poller, daemon=True).start()
+
+    print("RTSP Viewer · Panel central")
+    print(f"  En este PC:        http://localhost:{port}")
+    if primary_ip():
+        print(f"  Desde otro equipo: http://{primary_ip()}:{port}")
+    print(f"  Configuración:     {CONFIG_PATH}")
+    print("\nCierra esta ventana para detener el panel (los equipos siguen funcionando).")
+    if CFG.get("open_browser"):
+        threading.Timer(0.8, lambda: webbrowser.open(f"http://localhost:{port}")).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

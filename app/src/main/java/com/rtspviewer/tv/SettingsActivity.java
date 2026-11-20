@@ -1,8 +1,14 @@
 package com.rtspviewer.tv;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
+import android.view.View;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -46,6 +52,32 @@ public class SettingsActivity extends Activity {
         updatePreview();
 
         findViewById(R.id.save).setOnClickListener(v -> save());
+        findViewById(R.id.grant_autostart).setOnClickListener(v -> requestOverlayPermission());
+        autostart.setOnCheckedChangeListener((b, checked) -> updatePermissionHint());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updatePermissionHint(); // por si vuelve de conceder el permiso
+    }
+
+    /** Muestra el aviso si el inicio automático está activado pero falta el permiso que lo hace posible. */
+    private void updatePermissionHint() {
+        boolean missing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && autostart.isChecked()
+                && !Settings.canDrawOverlays(this);
+        findViewById(R.id.autostart_permission).setVisibility(missing ? View.VISIBLE : View.GONE);
+    }
+
+    private void requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(i);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, R.string.grant_autostart_unavailable, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void save() {

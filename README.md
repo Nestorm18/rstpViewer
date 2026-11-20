@@ -1,6 +1,6 @@
 # RTSP Viewer
 
-App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire TV…) que muestra una cámara IP por **RTSP** a pantalla completa. Sin anuncios, sin cuentas, sin nube: se conecta directamente a la cámara en tu red local.
+App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire TV…) y **tablets Android** que muestra una cámara IP por **RTSP** a pantalla completa. Sin anuncios, sin cuentas, sin nube: se conecta directamente a la cámara en tu red local.
 
 ## Características
 - Vídeo a pantalla completa y la pantalla no se apaga mientras se ve.
@@ -8,7 +8,8 @@ App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire
 - Reconexión automática cada 5 s si se cae la conexión.
 - Transporte RTP sobre TCP (opcional, más estable en Wi-Fi).
 - **Modo respaldo:** cuando lo eliges, muestra una imagen, un vídeo o un texto en lugar de la cámara.
-- **Control desde el PC por la red local**, con un programa para Windows o desde el navegador.
+- **Control por la red local:** un panel central en Windows para todos los equipos a la vez, o el panel web de cada equipo.
+- Funciona en **TV sticks y en tablets** Android.
 - Basada en [AndroidX Media3 / ExoPlayer](https://developer.android.com/media/media3).
 
 ## Uso
@@ -16,6 +17,8 @@ App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire
 |---|---|
 | **OK** o **Menú** | Abrir la configuración |
 | **Atrás** | Salir |
+
+En una **tablet**, toca la pantalla para abrir la configuración.
 
 La primera vez se abre directamente la pantalla de configuración. La URL resultante es:
 
@@ -46,18 +49,20 @@ El contenido de respaldo puede ser:
 Todo se gestiona por la red y los cambios se aplican al momento, sin reiniciar la app. El stick guarda el archivo, el texto y el modo, así que el PC puede apagarse después.
 En la pantalla de ajustes se ve la dirección de control (`http://IP_DEL_STICK:8080`) y también se puede escribir el texto de respaldo.
 
-### Programa de control para Windows
-Está en [`pc/rtspviewer_control.pyw`](pc/rtspviewer_control.pyw). Es un solo archivo que solo usa la biblioteca estándar de Python 3.
-Se abre con doble clic si tienes Python instalado. Para tener un `.exe` que no necesite Python, ejecuta [`pc/crear_exe.bat`](pc/crear_exe.bat), que usa PyInstaller.
+### Panel central (varios equipos a la vez)
+[`pc/panel_central.py`](pc/panel_central.py) es un servidor web para Windows que gestiona **todos los equipos a la vez**, sean TV sticks o tablets. Es un solo archivo que solo usa la biblioteca estándar de Python 3.
 
-- **IP del stick:** se escribe a mano o se encuentra con **Buscar**, que recorre la red local /24. **Comprobar** confirma la conexión.
-- **Estado:** cámara, qué se ve, modo, archivo actual y espacio libre. Se actualiza solo cada 4 s.
-- **Elegir archivo y enviar:** sirve para imágenes, vídeos y **PowerPoint** (`.pptx`, `.ppt`, `.ppsx`). El PowerPoint se convierte con el PowerPoint instalado en el PC antes de enviarlo:
+- **Abrirlo:** doble clic en [`pc/iniciar_panel.bat`](pc/iniciar_panel.bat). Se abre una ventana negra con las direcciones y el navegador en `http://localhost:8000`. Para tenerlo sin Python, [`pc/crear_exe.bat`](pc/crear_exe.bat) crea `PanelCentral.exe` con PyInstaller.
+- **Desde otros PCs o el móvil:** abre `http://IP_DEL_PC:8000`. La dirección exacta aparece en la ventana negra. La primera vez, Windows pregunta si permite a Python usar la red: acepta para **redes privadas**.
+- **Equipos:** **Buscar en la red** añade todos los que encuentre en la red local /24. También se pueden añadir a mano con su IP y un nombre. Si haces clic en el nombre, lo puedes cambiar.
+- **Tabla de estado** de cada equipo: conexión, cámara, qué muestra, archivo y espacio libre. Se actualiza sola.
+- **Acciones sobre los equipos marcados:** mostrar cámara o respaldo, enviar archivo (con el progreso de cada equipo), enviar texto y borrar archivo. Si un equipo está apagado, se marca en rojo y el resto se actualiza igual.
+- **PowerPoint** (`.pptx`, `.ppt`, `.ppsx`): se convierte **una sola vez** con el PowerPoint instalado en el PC donde corre el panel, y se reparte a todos los equipos marcados:
   - Si tiene 1 diapositiva, se convierte en una imagen JPG de 1920 px de ancho.
-  - Si tiene varias, se convierte en un vídeo MP4 de 1080p con *N* segundos por diapositiva (8 por defecto, configurable).
-- **Qué mostrar en la tele** (cámara o respaldo), **texto de respaldo** y **borrar archivo**.
+  - Si tiene varias, se convierte en un vídeo MP4 de 1080p con *N* segundos por diapositiva (8 por defecto, configurable en la web).
 
-La configuración (IP y segundos por diapositiva) se guarda en `rtspviewer_control.json`, junto al programa.
+La lista de equipos y los ajustes se guardan en `pc/panel_central.json`. Ahí se puede cambiar también el puerto (`port`) y si se abre el navegador al iniciar (`open_browser`).
+Al cerrar la ventana negra se detiene el panel, pero los equipos siguen mostrando lo último que se les envió.
 
 ### Desde el navegador
 Abre `http://IP_DEL_STICK:8080` en cualquier navegador de la red local. Ahí puedes ver el estado, cambiar el modo, subir un archivo (sin la conversión de PowerPoint) y cambiar el texto.
@@ -100,6 +105,11 @@ Requisitos: JDK 17 o 21 y el Android SDK (plataforma 34).
 
 El APK queda en `app/build/outputs/apk/debug/app-debug.apk`.
 
+## Instalar en una tablet
+Copia el APK a la tablet (por USB, Drive o correo), ábrelo y permite instalar apps de **fuentes desconocidas** cuando lo pida.
+Para que se abra sola al encender, activa **Iniciar al encender** en los ajustes de la app y pulsa **Permitir el inicio automático**. Se abrirá la pantalla de Android donde se activa *Mostrar sobre otras apps*.
+Conviene tenerla siempre enchufada: si Android cierra la app para ahorrar batería, también se para el control remoto.
+
 ## Instalar en el TV stick
 1. En el stick: *Ajustes → Preferencias del dispositivo → Información* → pulsa 7 veces **Compilación** para activar las opciones de desarrollador.
 2. En *Opciones de desarrollador* activa **Depuración USB / ADB**.
@@ -115,7 +125,7 @@ Sin PC: sube el APK a la nube y ábrelo en el stick con *Downloader* o *Send Fil
 ### Iniciar al encender
 La opción **Iniciar al encender** (activada por defecto) abre la app automáticamente al arrancar el stick.
 En Android 10 o superior, Android solo deja abrir una app desde segundo plano si tiene el permiso
-*Mostrar sobre otras apps*. En Android TV ese ajuste no suele aparecer en el menú, así que se concede una vez con adb:
+*Mostrar sobre otras apps*. En tablets se activa desde los ajustes de la app (ver arriba). En Android TV ese ajuste no suele aparecer en el menú, así que se concede una vez con adb:
 
 ```bash
 adb shell appops set com.rtspviewer.tv SYSTEM_ALERT_WINDOW allow

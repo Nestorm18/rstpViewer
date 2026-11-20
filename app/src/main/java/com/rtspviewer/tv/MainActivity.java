@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ImageView;
@@ -135,6 +136,13 @@ public class MainActivity extends Activity {
                 return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    /** En tablets (sin mando), tocar la pantalla abre la configuración. */
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev.getActionMasked() == MotionEvent.ACTION_UP) openSettings();
+        return true;
     }
 
     private void openSettings() {

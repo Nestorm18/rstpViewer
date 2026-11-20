@@ -23,8 +23,13 @@ captures/
 Thumbs.db
 
 # Programa de PC
-pc/rtspviewer_control.json
 pc/build/
 pc/dist/
 pc/*.spec
 __pycache__/
+
+pc/panel_central.json
+pc/panel_central.json.tmp
+
+# Archivos locales de trabajo
+temp/

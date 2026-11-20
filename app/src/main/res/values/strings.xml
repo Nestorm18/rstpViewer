@@ -19,5 +19,8 @@
     <string name="ip_required">Escribe la IP</string>
     <string name="connecting">Conectando…</string>
     <string name="reconnecting">Reconectando…</string>
-    <string name="error_fmt">Error: %1$s\nReintentando…\n(OK para configurar)</string>
+    <string name="error_fmt">Error: %1$s\nReintentando…\n(OK o toca la pantalla para configurar)</string>
+    <string name="grant_autostart">Permitir el inicio automático</string>
+    <string name="grant_autostart_help">Para abrirse sola al encender, Android pide el permiso «Mostrar sobre otras apps». Actívalo para RTSP Viewer en la pantalla que se abrirá.</string>
+    <string name="grant_autostart_unavailable">Este dispositivo no tiene esa pantalla. Concede el permiso desde el PC con adb (ver README).</string>
 </resources>
