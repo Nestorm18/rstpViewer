@@ -60,6 +60,7 @@ En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel centra
 - **Esquelas**, con un editor que no necesita PowerPoint:
   - **+ Esquela:** encabezado («La Señora», «El Señor»…), nombre, edad (si pones «87», sale «87 años»), detalles (las líneas que terminan en «:» salen en negrita), cruz y D.E.P. Siempre con fondo blanco. Admite una imagen opcional, que puede ir **debajo de la esquela, alargada** (por ejemplo, la foto de un servicio o un lugar) o **a la izquierda, en vertical** (la foto de la persona).
   - **+ Imagen:** una foto o un cartel a pantalla completa, entera o recortada para llenar la pantalla.
+  - **Rellenar con un ejemplo aleatorio**, dentro de cada esquela, la llena con datos inventados al azar (nombre, edad, fecha, hora, iglesia) para probar o usarla de plantilla. No cambia la imagen.
   - Las diapositivas se ordenan con ↑ ↓, se ven en una vista previa y todas duran el mismo tiempo (segundos configurables).
   - **Enviar y mostrar** las dibuja a 1920×1080, las reparte a los equipos marcados y las muestra al momento. **Borrar esquelas de los equipos** las elimina; si se estaban viendo, el equipo vuelve a la cámara.
   - Lo que hay en el editor se guarda en el navegador, así que no se pierde al cerrar la página. La primera vez aparece una **esquela de ejemplo** con datos inventados; **Cargar ejemplo** la recupera para usarla de plantilla.

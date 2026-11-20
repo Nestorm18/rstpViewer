@@ -1002,6 +1002,41 @@ function newEsquela() {
 }
 function newImage() { return { type:'imagen', image:null, fit:'contain' }; }
 
+
+// Datos inventados al azar para rellenar una esquela de ejemplo.
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const RND = {
+  mujer: ['Carmen','Dolores','Josefa','Rosario','Pilar','Mercedes','Concepción','Teresa','Ángeles','Manuela','Esperanza','Remedios'],
+  hombre: ['José','Manuel','Antonio','Francisco','Jesús','Ramón','Andrés','Emilio','Julián','Rafael','Vicente','Ángel'],
+  apellido: ['García','Fernández','López','Martínez','Rodríguez','Sánchez','Pérez','Gómez','Díaz','Vázquez','Castro','Otero','Iglesias','Rey','Varela','Domínguez'],
+  santo: ['San Martín','Santa María','San Pedro','Santiago','San Juan','Santa Eulalia','San Miguel','San Esteban'],
+  hora: ['10:30','11:00','12:00','16:00','16:30','17:00','17:30','18:00'],
+  dia: ['lunes','martes','miércoles','jueves','viernes','sábado','domingo'],
+  mes: ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'],
+};
+function randomEsquela(s) {
+  const woman = Math.random() < 0.5;
+  const first = pick(woman ? RND.mujer : RND.hombre);
+  let a1 = pick(RND.apellido), a2 = pick(RND.apellido);
+  while (a2 === a1) a2 = pick(RND.apellido);
+  const santo = pick(RND.santo);
+  const dia = pick(RND.dia);
+  const fallecio = woman ? 'confortada' : 'confortado';
+  return { ...s,
+    heading: woman ? 'La Señora' : 'El Señor',
+    name: `${woman ? 'Dña.' : 'D.'} ${first} ${a1} ${a2}`,
+    age: String(60 + Math.floor(Math.random() * 40)),
+    details: [
+      `Falleció el día ${1 + Math.floor(Math.random() * 28)} de ${pick(RND.mes)} de 2026,`,
+      `${fallecio} con los Santos Sacramentos.`,
+      '',
+      'Conducción del cadáver:',
+      `${dia[0].toUpperCase()}${dia.slice(1)}, a las ${pick(RND.hora)} h, desde el tanatorio`,
+      `a la iglesia parroquial de ${santo}, donde se celebrará el funeral.`,
+    ].join(String.fromCharCode(10)),
+  };
+}
+
 // Esquela de ejemplo con datos inventados, para ver cómo queda y usarla de plantilla.
 function exampleEsquela() {
   return { ...newEsquela(), heading:'La Señora', name:'Dña. Nombre Apellido Apellido', age:'87',
@@ -1215,6 +1250,7 @@ function renderForm() {
   const s = slides[current];
   if (s.type === 'esquela') {
     $('slide-form').innerHTML = `<div class="form">
+      ${field('', `<button class="ghost" data-random>Rellenar con un ejemplo aleatorio</button>`)}
       ${field('Encabezado', `<input type="text" data-k="heading" value="${esc(s.heading)}" placeholder="La Señora / El Señor">`)}
       ${field('Nombre', `<input type="text" data-k="name" value="${esc(s.name)}" placeholder="Dña. Nombre Apellido Apellido">`)}
       ${field('Edad', `<input type="text" data-k="age" value="${esc(s.age)}" placeholder="Ej.: 87 (se muestra «87 años»), o vacío" style="max-width:340px">`)}
@@ -1253,6 +1289,13 @@ $('slide-form').addEventListener('change', async e => {
   }
 });
 $('slide-form').addEventListener('click', e => {
+  if (e.target.dataset.random !== undefined) {
+    const s = slides[current];
+    const filled = [s.heading, s.name, s.age, s.details].some(v => String(v || '').trim());
+    if (filled && !confirm('¿Sustituir el texto de esta esquela por un ejemplo aleatorio? (La imagen se mantiene)')) return;
+    slides[current] = randomEsquela(s); saveSlides(); renderEditor();
+    return;
+  }
   const k = e.target.dataset.clear; if (!k) return;
   slides[current][k] = null; saveSlides(); renderEditor();
 });
