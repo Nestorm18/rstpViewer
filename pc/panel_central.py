@@ -844,6 +844,7 @@ PAGE = r"""<!doctype html>
         <div class="row" style="margin-top:10px">
           <button id="send-slides">Enviar y mostrar en los equipos marcados</button>
           <button class="danger" data-delete="esquela">Borrar esquelas de los equipos</button>
+          <button id="example-slides" class="ghost">Cargar ejemplo</button>
           <button id="clear-slides" class="ghost">Vaciar el editor</button>
         </div>
         <progress id="slides-prog" max="100" value="0" hidden></progress>
@@ -1000,6 +1001,19 @@ function newEsquela() {
   return { type:'esquela', heading:'', name:'', age:'', dep:true, cross:true, details:'', photo:null, photoPos:'debajo' };
 }
 function newImage() { return { type:'imagen', image:null, fit:'contain' }; }
+
+// Esquela de ejemplo con datos inventados, para ver cómo queda y usarla de plantilla.
+function exampleEsquela() {
+  return { ...newEsquela(), heading:'La Señora', name:'Dña. María Ejemplo Pérez', age:'87',
+    details: [
+      'Falleció el día 18 de noviembre de 2026,',
+      'confortada con los Santos Sacramentos.',
+      '',
+      'Conducción del cadáver:',
+      'Viernes, a las 15:30 h, desde el tanatorio',
+      'a la iglesia parroquial, donde se celebrará el funeral.',
+    ].join(String.fromCharCode(10)) };
+}
 
 function loadImg(src) {
   if (!src) return Promise.resolve(null);
@@ -1163,7 +1177,7 @@ function saveSlides() {
   }
 }
 try { slides = JSON.parse(localStorage.getItem('slides') || '[]'); } catch (_) { slides = []; }
-if (!slides.length) slides = [newEsquela()];
+if (!slides.length) slides = [exampleEsquela()];
 
 let drawToken = 0;
 async function renderEditor() {
@@ -1257,6 +1271,10 @@ $('slides').addEventListener('click', e => {
 });
 $('add-esq').onclick = () => { slides.push(newEsquela()); current = slides.length - 1; saveSlides(); renderEditor(); };
 $('add-img').onclick = () => { slides.push(newImage()); current = slides.length - 1; saveSlides(); renderEditor(); };
+$('example-slides').onclick = () => {
+  if (!confirm('¿Cambiar lo que hay en el editor por la esquela de ejemplo?')) return;
+  slides = [exampleEsquela()]; current = 0; saveSlides(); renderEditor();
+};
 $('clear-slides').onclick = () => {
   if (!confirm('¿Vaciar el editor y empezar de nuevo?')) return;
   slides = [newEsquela()]; current = 0; saveSlides(); renderEditor();
@@ -1308,7 +1326,10 @@ def main():
     except OSError as e:
         print(f"No se pudo abrir el puerto {port}: {e}")
         print("¿Está ya abierto el panel central? Puedes cambiar el puerto en panel_central.json.")
-        input("Pulsa Intro para salir…")
+        try:
+            input("Pulsa Intro para salir…")
+        except EOFError:  # sin consola (por ejemplo, arrancado en segundo plano)
+            pass
         return
     server.daemon_threads = True
     threading.Thread(target=poller, daemon=True).start()
