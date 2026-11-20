@@ -11,6 +11,7 @@ archivo (o junto al .exe). Los equipos no dependen de este servidor: cada uno gu
 su archivo, su texto y su modo, así que el PC se puede apagar después.
 """
 
+import base64
 import http.client
 import ipaddress
 import json
@@ -24,6 +25,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -34,6 +36,7 @@ DEVICE_TIMEOUT = 4
 SCAN_TIMEOUT = 0.8
 CHUNK = 256 * 1024
 SPACE_MARGIN = 50 * 1048576
+MAX_SLIDESHOW_BYTES = 200 * 1048576
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".webm"}
@@ -490,9 +493,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def body_json(self):
+    def body_json(self, limit=1048576):
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 1048576:
+        if n > limit:
             raise ValueError("Petición demasiado grande")
         try:
             return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
@@ -533,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/api/upload":
                 return self.upload(urllib.parse.parse_qs(url.query))
-            body = self.body_json()
+            body = self.body_json(MAX_SLIDESHOW_BYTES if url.path == "/api/slideshow" else 1048576)
             handler = {
                 "/api/devices/add": self.add_device,
                 "/api/devices/remove": self.remove_device,
@@ -543,6 +546,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/text": self.text,
                 "/api/delete": self.delete,
                 "/api/settings": self.settings,
+                "/api/slideshow": self.slideshow,
             }.get(url.path)
             if not handler:
                 return self.send_json(404, {"error": "No encontrado"})
@@ -589,6 +593,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def delete(self, body):
         run_on(self.target_ips(body), "Borrar archivo", lambda ip: dev_post(ip, "/api/delete"))
+        self.send_json(200, {"ok": True})
+
+    def slideshow(self, body):
+        """Diapositivas dibujadas en el navegador (JPEG en base64) → ZIP → equipos marcados."""
+        ips = self.target_ips(body)
+        slides = body.get("slides") or []
+        if not slides:
+            raise ValueError("Añade al menos una diapositiva")
+        if len(slides) > 100:
+            raise ValueError("Demasiadas diapositivas (máximo 100)")
+        try:
+            secs = int(body.get("seconds") or CFG.get("seconds_per_slide") or 8)
+        except (TypeError, ValueError):
+            raise ValueError("Los segundos por diapositiva deben ser un número")
+        if not 1 <= secs <= 600:
+            raise ValueError("Los segundos por diapositiva deben estar entre 1 y 600")
+        name = "".join(ch for ch in str(body.get("name") or "") if ch.isalnum() or ch in " -_.").strip(" .")[:60]
+        name = (name or "Diapositivas") + ".zip"
+        if STATE.busy:
+            raise ValueError("Ya hay un envío en curso; espera a que termine")
+
+        workdir = tempfile.mkdtemp(prefix="panel_central_")
+        zip_path = os.path.join(workdir, name)
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
+                for i, data_url in enumerate(slides, 1):
+                    head, _, data = str(data_url).partition(",")
+                    if head != "data:image/jpeg;base64":
+                        raise ValueError(f"La diapositiva {i} no es una imagen JPEG válida")
+                    z.writestr(f"{i:03d}.jpg", base64.b64decode(data, validate=True))
+                z.writestr("config.json", json.dumps({"seconds": secs}))
+        except (ValueError, base64.binascii.Error) as e:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise ValueError(str(e) or "Diapositivas no válidas")
+
+        CFG.set("seconds_per_slide", secs)
+        STATE.busy = True
+        threading.Thread(target=upload_job, args=(zip_path, name, ips, secs, workdir), daemon=True).start()
         self.send_json(200, {"ok": True})
 
     def settings(self, body):
@@ -697,6 +739,21 @@ PAGE = r"""<!doctype html>
   .grid section { margin:0; }
   .hint { color:var(--muted); font-size:13px; margin:6px 0 0; }
   progress { width:100%; height:8px; }
+  /* Editor de diapositivas */
+  .ed { display:grid; grid-template-columns:220px 1fr; gap:16px; }
+  @media (max-width:820px) { .ed { grid-template-columns:1fr; } }
+  .slides { display:flex; flex-direction:column; gap:8px; }
+  .thumb { border:2px solid var(--line); border-radius:6px; padding:4px; cursor:pointer; background:var(--soft); }
+  .thumb.on { border-color:var(--accent); }
+  .thumb canvas { width:100%; display:block; border-radius:3px; background:#000; }
+  .thumb .tb { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); margin-top:3px; }
+  .thumb .tb button { padding:0 6px; font-size:13px; }
+  .form { display:grid; grid-template-columns:150px 1fr; gap:8px 12px; align-items:center; margin:12px 0; }
+  .form label { color:var(--muted); }
+  .form input[type=text], .form textarea, .form select { width:100%; font:inherit; color:inherit; background:var(--card);
+          border:1px solid var(--line); border-radius:6px; padding:7px 9px; }
+  #preview { width:100%; aspect-ratio:16/9; display:block; border:1px solid var(--line); border-radius:6px; background:#000; }
+  .chk { display:flex; gap:16px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -749,6 +806,30 @@ PAGE = r"""<!doctype html>
   </div>
 
   <section style="margin-top:14px">
+    <h2>Esquela y diapositivas</h2>
+    <p class="hint" style="margin:0 0 12px">Crea las diapositivas aquí y envíalas a los equipos marcados. Se muestran en bucle,
+      todas con el mismo tiempo (<input type="number" id="slide-secs" min="1" max="600" style="width:64px"> s cada una).</p>
+    <div class="ed">
+      <div>
+        <div class="row" style="margin-bottom:8px">
+          <button id="add-esq" class="ghost">+ Esquela</button>
+          <button id="add-img" class="ghost">+ Imagen</button>
+        </div>
+        <div class="slides" id="slides"></div>
+      </div>
+      <div>
+        <div id="slide-form"></div>
+        <canvas id="preview" width="1920" height="1080"></canvas>
+        <div class="row" style="margin-top:10px">
+          <button id="send-slides">Enviar diapositivas a los equipos marcados</button>
+          <button id="clear-slides" class="danger">Vaciar</button>
+        </div>
+        <progress id="slides-prog" max="100" value="0" hidden></progress>
+      </div>
+    </div>
+  </section>
+
+  <section style="margin-top:14px">
     <h2>Texto de respaldo (se muestra si no hay archivo)</h2>
     <textarea id="text" maxlength="500" placeholder="Cámara no disponible"></textarea>
     <div class="row" style="margin-top:8px"><button id="send-text">Enviar texto</button></div>
@@ -784,7 +865,8 @@ function render() {
       : on ? '<span class="ok"><span class="dot" style="background:currentColor"></span>Conectado</span>'
            : `<span class="bad" title="${esc(d.error)}"><span class="dot" style="background:currentColor"></span>${esc(d.error)}</span>`;
     const cam = on ? (CAM[s.camera] || [s.camera, '']) : ['–', 'muted'];
-    const file = on ? (s.file ? `${esc(s.file.name)} <span class="muted">(${s.file.type}, ${mb(s.file.size)})</span>`
+    const kind = f => f.type === 'diapositivas' ? `${f.slides} diapositivas × ${f.seconds} s` : f.type;
+    const file = on ? (s.file ? `${esc(s.file.name)} <span class="muted">(${kind(s.file)}, ${mb(s.file.size)})</span>`
                                : `<span class="muted">Texto: «${esc(s.text)}»</span>`) : '<span class="muted">–</span>';
     const t = d.task;
     const task = !t ? '' : `<div class="task ${t.state === 'error' ? 'bad' : t.state === 'ok' ? 'ok' : ''}">${esc(t.text)}</div>`
@@ -806,8 +888,10 @@ function render() {
     '<tr><td colspan="9" class="muted" style="padding:18px 8px">No hay equipos. Pulsa «Buscar en la red» o añade una IP.</td></tr>';
   $('all').checked = state.devices.length > 0 && state.devices.every(d => selected.has(d.ip));
   if (!secsTouched && state.seconds_per_slide) $('secs').value = state.seconds_per_slide;
+  if (typeof slideSecsTouched !== 'undefined' && !slideSecsTouched && state.seconds_per_slide) $('slide-secs').value = state.seconds_per_slide;
   if (state.notice && !uploading) notice(state.notice.text, state.notice.state === 'error' ? 'bad' : state.notice.state === 'ok' ? 'ok' : 'warn');
   $('send-file').disabled = uploading || state.busy;
+  if ($('send-slides')) $('send-slides').disabled = state.busy;
 }
 
 async function refresh() {
@@ -876,6 +960,308 @@ $('send-file').onclick = () => {
   xhr.onerror = () => { notice('Se cortó la conexión al subir el archivo.', 'bad'); end(); };
   xhr.send(f);
 };
+
+
+// =================================================================== editor de diapositivas
+const W = 1920, H = 1080;
+// La esquela es siempre de fondo blanco.
+const ST = { bg:'#ffffff', fg:'#111111', soft:'#444444', frame:'#111111' };
+let slides = [], current = 0;
+const imgCache = new Map();   // dataURL -> HTMLImageElement cargada
+
+function newEsquela() {
+  return { type:'esquela', heading:'', name:'', age:'', dep:true, cross:true, details:'', photo:null, photoPos:'debajo' };
+}
+function newImage() { return { type:'imagen', image:null, fit:'contain' }; }
+
+function loadImg(src) {
+  if (!src) return Promise.resolve(null);
+  if (imgCache.has(src)) return Promise.resolve(imgCache.get(src));
+  return new Promise(res => {
+    const im = new Image();
+    im.onload = () => { imgCache.set(src, im); res(im); };
+    im.onerror = () => res(null);
+    im.src = src;
+  });
+}
+
+// Reduce la imagen elegida a 1920 px como máximo para no cargar la página ni la red.
+function readImage(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onerror = () => rej(new Error('No se pudo leer la imagen'));
+    fr.onload = async () => {
+      const im = await loadImg(fr.result);
+      if (!im) return rej(new Error('El archivo no es una imagen válida'));
+      const k = Math.min(1, 1920 / Math.max(im.width, im.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      res(c.toDataURL('image/jpeg', 0.9));
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+const SERIF = 'Georgia, "Times New Roman", serif';
+function font(ctx, size, weight, style) { ctx.font = `${style || ''} ${weight || 'normal'} ${Math.round(size)}px ${SERIF}`; }
+
+function wrap(ctx, text, maxW) {
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (!words.length) { out.push(''); continue; }
+    let line = words[0];
+    for (const w of words.slice(1)) {
+      if (ctx.measureText(line + ' ' + w).width <= maxW) line += ' ' + w; else { out.push(line); line = w; }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function drawCross(ctx, cx, top, h, color) {
+  const w = h * 0.62, t = h * 0.12;
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - t / 2, top, t, h);
+  ctx.fillRect(cx - w / 2, top + h * 0.26, w, t);
+}
+
+// Bloques de texto de la esquela con un factor de escala k; devuelve la altura total.
+function esquelaBlocks(ctx, s, k, maxW) {
+  const b = [];
+  const add = (text, size, weight, style, gap, color) => {
+    font(ctx, size * k, weight, style);
+    for (const line of wrap(ctx, text, maxW)) b.push({ text: line, size: size * k, weight, style, color });
+    b.push({ gap: gap * k });
+  };
+  if (s.heading.trim()) add(s.heading.trim(), 58, 'normal', 'italic', 18, 'soft');
+  add(s.name.trim() || 'Nombre', 104, 'bold', '', 14, 'fg');
+  if (String(s.age).trim()) add(/^\d+$/.test(String(s.age).trim()) ? `${String(s.age).trim()} años` : String(s.age).trim(), 52, 'normal', 'italic', 10, 'soft');
+  if (s.dep) add('D.E.P.', 64, 'bold', '', 20, 'fg');
+  if (s.details.trim()) {
+    b.push({ rule: true, gap: 34 * k });
+    for (const line of s.details.trim().split('\n')) {
+      const strong = /:\s*$/.test(line);
+      add(line.trim(), 46, strong ? 'bold' : 'normal', '', strong ? 4 : 12, strong ? 'fg' : 'soft');
+    }
+  }
+  let h = 0;
+  for (const x of b) h += x.gap != null ? x.gap : x.size * 1.22;
+  return { blocks: b, height: h };
+}
+
+async function drawSlide(ctx, s) {
+  ctx.save();
+  ctx.clearRect(0, 0, W, H);
+  if (s.type === 'imagen') {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    const im = await loadImg(s.image);
+    if (im) {
+      const k = (s.fit === 'cover' ? Math.max : Math.min)(W / im.width, H / im.height);
+      const w = im.width * k, h = im.height * k;
+      ctx.drawImage(im, (W - w) / 2, (H - h) / 2, w, h);
+    } else {
+      ctx.fillStyle = '#888'; font(ctx, 56); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('Elige una imagen', W / 2, H / 2);
+    }
+    ctx.restore();
+    return;
+  }
+
+  const st = ST;
+  const col = c => c === 'fg' ? st.fg : st.soft;
+  ctx.fillStyle = st.bg; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = st.frame;
+  ctx.lineWidth = 10; ctx.strokeRect(36, 36, W - 72, H - 72);
+  ctx.lineWidth = 3;  ctx.strokeRect(58, 58, W - 116, H - 116);
+
+  // Imagen recortada para llenar el recuadro, con un marco fino
+  const framed = (im, x, y, w, h) => {
+    ctx.save();
+    const k = Math.max(w / im.width, h / im.height);
+    ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+    ctx.drawImage(im, x + (w - im.width * k) / 2, y + (h - im.height * k) / 2, im.width * k, im.height * k);
+    ctx.restore();
+    ctx.strokeStyle = st.frame; ctx.lineWidth = 3; ctx.strokeRect(x - 8, y - 8, w + 16, h + 16);
+  };
+
+  const photo = await loadImg(s.photo);
+  let x0 = 130, x1 = W - 130, bottom = H - 110;
+  if (photo && s.photoPos === 'izquierda') {
+    // Foto de la persona, en vertical a la izquierda
+    const ph = 640, pw = Math.min(520, ph * photo.width / photo.height);
+    framed(photo, 170, (H - ph) / 2, pw, ph);
+    x0 = 170 + pw + 80;
+  } else if (photo) {
+    // Imagen de un servicio, en una franja alargada debajo del texto
+    const sh = 250, sy = H - 96 - sh;
+    framed(photo, 150, sy, W - 300, sh);
+    bottom = sy - 28;
+  }
+  const cx = (x0 + x1) / 2, maxW = x1 - x0;
+
+  let top = 110;
+  const strip = photo && s.photoPos !== 'izquierda';
+  if (s.cross) { drawCross(ctx, cx, strip ? 84 : 96, strip ? 90 : 120, st.fg); top = strip ? 196 : 250; }
+  const avail = bottom - top;
+
+  // Reducir el tamaño hasta que todo quepa
+  let k = 1, lay = esquelaBlocks(ctx, s, k, maxW);
+  while (lay.height > avail && k > 0.35) { k -= 0.04; lay = esquelaBlocks(ctx, s, k, maxW); }
+
+  let y = top + Math.max(0, (avail - lay.height) / 2);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const x of lay.blocks) {
+    if (x.rule) {
+      ctx.strokeStyle = st.soft; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(cx - maxW * 0.18, y + x.gap / 2); ctx.lineTo(cx + maxW * 0.18, y + x.gap / 2); ctx.stroke();
+      y += x.gap;
+    } else if (x.gap != null) {
+      y += x.gap;
+    } else {
+      font(ctx, x.size, x.weight, x.style); ctx.fillStyle = col(x.color);
+      ctx.fillText(x.text, cx, y);
+      y += x.size * 1.22;
+    }
+  }
+  ctx.restore();
+}
+
+// ---- estado del editor (se guarda en este navegador)
+function saveSlides() {
+  try { localStorage.setItem('slides', JSON.stringify(slides)); }
+  catch (_) {
+    try { localStorage.setItem('slides', JSON.stringify(slides.map(s => ({ ...s, photo: null, image: null })))); } catch (_) {}
+  }
+}
+try { slides = JSON.parse(localStorage.getItem('slides') || '[]'); } catch (_) { slides = []; }
+if (!slides.length) slides = [newEsquela()];
+
+let drawToken = 0;
+async function renderEditor() {
+  current = Math.min(current, slides.length - 1);
+  // Miniaturas
+  $('slides').innerHTML = slides.map((s, i) => `
+    <div class="thumb ${i === current ? 'on' : ''}" data-i="${i}">
+      <canvas width="384" height="216"></canvas>
+      <div class="tb"><span>${i + 1}. ${s.type === 'esquela' ? 'Esquela' : 'Imagen'}</span>
+        <span><button class="x" data-up="${i}" title="Subir">↑</button><button class="x" data-down="${i}" title="Bajar">↓</button><button class="x" data-del="${i}" title="Quitar">×</button></span></div>
+    </div>`).join('');
+  renderForm();
+  const token = ++drawToken;
+  await drawSlide($('preview').getContext('2d'), slides[current]);
+  const big = document.createElement('canvas'); big.width = W; big.height = H;
+  const thumbs = $('slides').querySelectorAll('canvas');
+  for (let i = 0; i < slides.length; i++) {
+    if (token !== drawToken) return;
+    await drawSlide(big.getContext('2d'), slides[i]);
+    thumbs[i]?.getContext('2d').drawImage(big, 0, 0, 384, 216);
+  }
+}
+
+async function redrawCurrent() {
+  saveSlides();
+  await drawSlide($('preview').getContext('2d'), slides[current]);
+  const big = document.createElement('canvas'); big.width = W; big.height = H;
+  await drawSlide(big.getContext('2d'), slides[current]);
+  $('slides').querySelectorAll('canvas')[current]?.getContext('2d').drawImage(big, 0, 0, 384, 216);
+}
+
+function field(label, html) { return `<label>${label}</label><div>${html}</div>`; }
+
+function renderForm() {
+  const s = slides[current];
+  if (s.type === 'esquela') {
+    $('slide-form').innerHTML = `<div class="form">
+      ${field('Encabezado', `<input type="text" data-k="heading" value="${esc(s.heading)}" placeholder="La Señora / El Señor">`)}
+      ${field('Nombre', `<input type="text" data-k="name" value="${esc(s.name)}" placeholder="Dña. Nombre Apellido Apellido">`)}
+      ${field('Edad', `<input type="text" data-k="age" value="${esc(s.age)}" placeholder="Ej.: 87 (se muestra «87 años»), o vacío" style="max-width:340px">`)}
+      ${field('Detalles', `<textarea data-k="details" rows="5" placeholder="Conducción del cadáver:&#10;Viernes a las 15:30 h&#10;Iglesia y cementerio parroquiales de ...">${esc(s.details)}</textarea>`)}
+      ${field('', `<span class="hint" style="margin:0">Las líneas que terminan en «:» salen en negrita.</span>`)}
+      ${field('Imagen', `<input type="file" accept="image/*" data-file="photo"> ${s.photo ? '<button class="ghost" data-clear="photo">Quitar imagen</button>' : ''}`)}
+      ${field('Posición', `<select data-k="photoPos" style="width:auto">
+        <option value="debajo">Debajo de la esquela, alargada (servicio, lugar…)</option>
+        <option value="izquierda">A la izquierda, vertical (foto de la persona)</option></select>`)}
+      ${field('', `<div class="chk">
+        <label><input type="checkbox" data-k="cross" ${s.cross ? 'checked' : ''}> Cruz</label>
+        <label><input type="checkbox" data-k="dep" ${s.dep ? 'checked' : ''}> D.E.P.</label></div>`)}
+    </div>`;
+    $('slide-form').querySelector('[data-k=photoPos]').value = s.photoPos === 'izquierda' ? 'izquierda' : 'debajo';
+  } else {
+    $('slide-form').innerHTML = `<div class="form">
+      ${field('Imagen', `<input type="file" accept="image/*" data-file="image">`)}
+      ${field('Ajuste', `<select data-k="fit" style="width:auto"><option value="contain">Entera (con bandas negras)</option><option value="cover">Llenar la pantalla (recorta)</option></select>`)}
+    </div>`;
+    $('slide-form').querySelector('[data-k=fit]').value = s.fit;
+  }
+}
+
+$('slide-form').addEventListener('input', e => {
+  const k = e.target.dataset.k; if (!k) return;
+  slides[current][k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+  redrawCurrent();
+});
+$('slide-form').addEventListener('change', async e => {
+  const k = e.target.dataset.file;
+  if (k && e.target.files[0]) {
+    try { slides[current][k] = await readImage(e.target.files[0]); renderEditor(); saveSlides(); }
+    catch (err) { notice(err.message, 'bad'); }
+  } else if (e.target.dataset.k && e.target.tagName === 'SELECT') {
+    slides[current][e.target.dataset.k] = e.target.value; redrawCurrent();
+  }
+});
+$('slide-form').addEventListener('click', e => {
+  const k = e.target.dataset.clear; if (!k) return;
+  slides[current][k] = null; saveSlides(); renderEditor();
+});
+$('slides').addEventListener('click', e => {
+  const t = e.target.dataset;
+  if (t.up != null) { const i = +t.up; if (i > 0) { [slides[i - 1], slides[i]] = [slides[i], slides[i - 1]]; current = i - 1; } }
+  else if (t.down != null) { const i = +t.down; if (i < slides.length - 1) { [slides[i + 1], slides[i]] = [slides[i], slides[i + 1]]; current = i + 1; } }
+  else if (t.del != null) {
+    if (slides.length === 1) { notice('Tiene que quedar al menos una diapositiva.', 'bad'); return; }
+    if (!confirm('¿Quitar esta diapositiva?')) return;
+    slides.splice(+t.del, 1);
+  } else {
+    const th = e.target.closest('.thumb'); if (!th) return; current = +th.dataset.i;
+  }
+  saveSlides(); renderEditor();
+});
+$('add-esq').onclick = () => { slides.push(newEsquela()); current = slides.length - 1; saveSlides(); renderEditor(); };
+$('add-img').onclick = () => { slides.push(newImage()); current = slides.length - 1; saveSlides(); renderEditor(); };
+$('clear-slides').onclick = () => {
+  if (!confirm('¿Vaciar el editor y empezar de nuevo?')) return;
+  slides = [newEsquela()]; current = 0; saveSlides(); renderEditor();
+};
+
+let slideSecsTouched = false;
+$('slide-secs').oninput = () => { slideSecsTouched = true; };
+
+$('send-slides').onclick = async () => {
+  const list = ips(); if (!list) return;
+  const secs = parseInt($('slide-secs').value, 10);
+  if (!(secs >= 1 && secs <= 600)) { notice('Los segundos por diapositiva deben estar entre 1 y 600.', 'bad'); return; }
+  if (slides.some(s => s.type === 'imagen' && !s.image)) { notice('Hay una diapositiva de imagen sin imagen elegida.', 'bad'); return; }
+  $('send-slides').disabled = true; $('slides-prog').hidden = false; $('slides-prog').value = 0;
+  try {
+    const big = document.createElement('canvas'); big.width = W; big.height = H;
+    const out = [];
+    for (let i = 0; i < slides.length; i++) {
+      await drawSlide(big.getContext('2d'), slides[i]);
+      out.push(big.toDataURL('image/jpeg', 0.9));
+      $('slides-prog').value = 100 * (i + 1) / slides.length;
+    }
+    const first = slides.find(s => s.type === 'esquela' && s.name.trim());
+    await post('/api/slideshow', { ips: list, seconds: secs, slides: out, name: first ? first.name.trim() : 'Diapositivas' });
+    slideSecsTouched = false;
+    notice(`Enviando ${out.length} diapositiva(s) a ${list.length} equipo(s)…`, 'warn');
+    await refresh();
+  } catch (e) { notice(e.message, 'bad'); }
+  $('send-slides').disabled = false; $('slides-prog').hidden = true;
+};
+
+renderEditor();
 
 refresh();
 setInterval(refresh, 1500);

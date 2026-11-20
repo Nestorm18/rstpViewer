@@ -8,7 +8,7 @@ App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire
 - Reconexión automática cada 5 s si se cae la conexión.
 - Transporte RTP sobre TCP (opcional, más estable en Wi-Fi).
 - **Modo respaldo:** cuando lo eliges, muestra una imagen, un vídeo o un texto en lugar de la cámara.
-- **Control por la red local:** un panel central en Windows para todos los equipos a la vez, o el panel web de cada equipo.
+- **Control por la red local:** un panel central en Windows para todos los equipos a la vez, con editor de esquelas.
 - Funciona en **TV sticks y en tablets** Android.
 - Basada en [AndroidX Media3 / ExoPlayer](https://developer.android.com/media/media3).
 
@@ -39,6 +39,7 @@ Para cuando la cámara no funciona. El cambio entre cámara y respaldo es **solo
 El contenido de respaldo puede ser:
 - **Un vídeo** (MP4, MKV o WEBM), que se reproduce en bucle y sin sonido.
 - **Una imagen** (JPG, PNG o WEBP), que se reduce a 1920×1080 como máximo.
+- **Un pase de diapositivas** (esquelas e imágenes) creado con el editor del panel central, que pasan en bucle con un fundido y el mismo tiempo cada una.
 - **Un texto** grande y centrado, si no hay archivo. Por defecto es «Cámara no disponible».
 
 | Modo | Qué se ve |
@@ -47,7 +48,7 @@ El contenido de respaldo puede ser:
 | **Respaldo** | El contenido de respaldo. La cámara se desconecta. |
 
 Todo se gestiona por la red y los cambios se aplican al momento, sin reiniciar la app. El stick guarda el archivo, el texto y el modo, así que el PC puede apagarse después.
-En la pantalla de ajustes se ve la dirección de control (`http://IP_DEL_STICK:8080`) y también se puede escribir el texto de respaldo.
+En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel central) y también se puede escribir el texto de respaldo.
 
 ### Panel central (varios equipos a la vez)
 [`pc/panel_central.py`](pc/panel_central.py) es un servidor web para Windows que gestiona **todos los equipos a la vez**, sean TV sticks o tablets. Es un solo archivo que solo usa la biblioteca estándar de Python 3.
@@ -56,6 +57,12 @@ En la pantalla de ajustes se ve la dirección de control (`http://IP_DEL_STICK:8
 - **Desde otros PCs o el móvil:** abre `http://IP_DEL_PC:8000`. La dirección exacta aparece en la ventana negra. La primera vez, Windows pregunta si permite a Python usar la red: acepta para **redes privadas**.
 - **Equipos:** **Buscar en la red** añade todos los que encuentre en la red local /24. También se pueden añadir a mano con su IP y un nombre. Si haces clic en el nombre, lo puedes cambiar.
 - **Tabla de estado** de cada equipo: conexión, cámara, qué muestra, archivo y espacio libre. Se actualiza sola.
+- **Editor de esquelas y diapositivas** (no necesita PowerPoint):
+  - **+ Esquela:** encabezado («La Señora», «El Señor»…), nombre, edad (si pones «87», sale «87 años»), detalles (las líneas que terminan en «:» salen en negrita), cruz y D.E.P. Siempre con fondo blanco. Admite una imagen opcional, que puede ir **debajo de la esquela, alargada** (por ejemplo, la foto de un servicio o un lugar) o **a la izquierda, en vertical** (la foto de la persona).
+  - **+ Imagen:** una foto o un cartel a pantalla completa, entera o recortada para llenar la pantalla.
+  - Las diapositivas se ordenan con ↑ ↓, se ven en una vista previa y todas duran el mismo tiempo (segundos configurables).
+  - **Enviar diapositivas** las dibuja a 1920×1080 y las reparte a los equipos marcados. Después, pulsa **Mostrar respaldo** para que se vean.
+  - Lo que hay en el editor se guarda en el navegador, así que no se pierde al cerrar la página.
 - **Acciones sobre los equipos marcados:** mostrar cámara o respaldo, enviar archivo (con el progreso de cada equipo), enviar texto y borrar archivo. Si un equipo está apagado, se marca en rojo y el resto se actualiza igual.
 - **PowerPoint** (`.pptx`, `.ppt`, `.ppsx`): se convierte **una sola vez** con el PowerPoint instalado en el PC donde corre el panel, y se reparte a todos los equipos marcados:
   - Si tiene 1 diapositiva, se convierte en una imagen JPG de 1920 px de ancho.
@@ -64,16 +71,13 @@ En la pantalla de ajustes se ve la dirección de control (`http://IP_DEL_STICK:8
 La lista de equipos y los ajustes se guardan en `pc/panel_central.json`. Ahí se puede cambiar también el puerto (`port`) y si se abre el navegador al iniciar (`open_browser`).
 Al cerrar la ventana negra se detiene el panel, pero los equipos siguen mostrando lo último que se les envió.
 
-### Desde el navegador
-Abre `http://IP_DEL_STICK:8080` en cualquier navegador de la red local. Ahí puedes ver el estado, cambiar el modo, subir un archivo (sin la conversión de PowerPoint) y cambiar el texto.
-
 ### API HTTP
 El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local (privadas, link-local o loopback). No tiene contraseña, así que cualquiera en tu red local puede cambiar el respaldo.
 
 | Petición | Cuerpo | Descripción |
 |---|---|---|
 | `GET /api/status` | – | Estado en JSON (ver abajo) |
-| `POST /api/upload?name=archivo.ext` | el archivo, con `Content-Length` | Sustituye el archivo de respaldo. Primero se guarda en un temporal y luego se renombra. Se rechaza si no cabe (se dejan 50 MB libres). |
+| `POST /api/upload?name=archivo.ext` | el archivo, con `Content-Length` | Sustituye el archivo de respaldo. Primero se guarda en un temporal y luego se renombra. Se rechaza si no cabe (se dejan 50 MB libres). Un `.zip` es un pase de diapositivas: imágenes JPG, PNG o WEBP (en orden por nombre) y un `config.json` opcional con `{"seconds": 8}`. |
 | `POST /api/text` | texto UTF-8 (máx. 500) | Texto de respaldo. Si va vacío, se usa el texto por defecto. |
 | `POST /api/mode` | `camara` o `respaldo` | Cambia lo que se muestra |
 | `POST /api/delete` | – | Borra el archivo de respaldo |

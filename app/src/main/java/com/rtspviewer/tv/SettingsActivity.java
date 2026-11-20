@@ -38,7 +38,7 @@ public class SettingsActivity extends Activity {
         String localIp = App.localIp();
         ((TextView) findViewById(R.id.remote_url)).setText(localIp == null
                 ? getString(R.string.remote_url_none)
-                : getString(R.string.remote_url_fmt, localIp, App.HTTP_PORT));
+                : getString(R.string.remote_url_fmt, localIp));
 
         SharedPreferences p = Prefs.get(this);
         ip.setText(p.getString(Prefs.IP, ""));

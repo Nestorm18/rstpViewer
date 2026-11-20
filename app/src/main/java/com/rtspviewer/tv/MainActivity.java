@@ -27,6 +27,7 @@ import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import androidx.media3.ui.PlayerView;
 
 import java.io.File;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -69,6 +70,12 @@ public class MainActivity extends Activity {
     private boolean backupShown;
     /** Identifica el contenido de respaldo cargado, para no recargarlo si no cambia. */
     private String loadedBackupKey;
+
+    private static final long SLIDE_FADE_MS = 400;
+    private List<File> slideFiles;
+    private int slideIndex;
+    private long slideMs;
+    private final Runnable nextSlide = this::showNextSlide;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService decoder = Executors.newSingleThreadExecutor();
@@ -283,6 +290,8 @@ public class MainActivity extends Activity {
         if (!backupShown) {
             backupShown = true;
             backupLayer.setVisibility(View.VISIBLE);
+            // La superficie de la cámara no se usa en modo respaldo: quitarla libera la GPU.
+            playerView.setVisibility(View.INVISIBLE);
         }
         loadBackupContent();
     }
@@ -292,7 +301,9 @@ public class MainActivity extends Activity {
         if (!backupShown) return;
         backupShown = false;
         backupLayer.setVisibility(View.GONE);
+        playerView.setVisibility(View.VISIBLE);
         releaseBackupPlayer();
+        stopSlides();
         backupImage.setImageDrawable(null);
         loadedBackupKey = null;
     }
@@ -306,15 +317,69 @@ public class MainActivity extends Activity {
         loadedBackupKey = key;
 
         releaseBackupPlayer();
+        stopSlides();
         backupImage.setImageDrawable(null);
 
+        String type = file == null ? null : Backup.type(file);
         if (file == null) {
             showBackupText(text);
-        } else if (Backup.TYPE_VIDEO.equals(Backup.type(file))) {
+        } else if (Backup.TYPE_VIDEO.equals(type)) {
             showBackupVideo(file);
+        } else if (Backup.TYPE_SLIDES.equals(type)) {
+            showBackupSlides(file);
         } else {
             showBackupImage(file, key);
         }
+    }
+
+    // ---- pase de diapositivas
+
+    private void showBackupSlides(File dir) {
+        slideFiles = Backup.slides(dir);
+        slideMs = Backup.slideSeconds(dir) * 1000L;
+        slideIndex = -1;
+        if (slideFiles.isEmpty()) {
+            showBackupText(Prefs.backupText(this));
+            return;
+        }
+        backupVideo.setVisibility(View.GONE);
+        backupText.setVisibility(View.GONE);
+        backupImage.setVisibility(View.VISIBLE);
+        backupImage.setAlpha(1f);
+        showNextSlide();
+    }
+
+    /** Decodifica la siguiente diapositiva en segundo plano y la muestra con un fundido. */
+    private void showNextSlide() {
+        if (!backupShown || slideFiles == null || slideFiles.isEmpty()) return;
+        slideIndex = (slideIndex + 1) % slideFiles.size();
+        File f = slideFiles.get(slideIndex);
+        String key = loadedBackupKey;
+        boolean first = backupImage.getDrawable() == null;
+        decoder.execute(() -> {
+            Bitmap bmp = decodeScaled(f);
+            handler.post(() -> {
+                if (key == null || !key.equals(loadedBackupKey) || !backupShown) return;
+                if (bmp != null) {
+                    if (first) {
+                        backupImage.setImageBitmap(bmp);
+                    } else {
+                        backupImage.animate().alpha(0f).setDuration(SLIDE_FADE_MS).withEndAction(() -> {
+                            backupImage.setImageBitmap(bmp);
+                            backupImage.animate().alpha(1f).setDuration(SLIDE_FADE_MS).start();
+                        }).start();
+                    }
+                }
+                if (slideFiles.size() > 1) handler.postDelayed(nextSlide, slideMs);
+            });
+        });
+    }
+
+    private void stopSlides() {
+        handler.removeCallbacks(nextSlide);
+        backupImage.animate().cancel();
+        backupImage.setAlpha(1f);
+        slideFiles = null;
     }
 
     private void showBackupText(String text) {

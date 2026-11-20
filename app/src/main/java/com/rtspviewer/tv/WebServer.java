@@ -26,13 +26,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Servidor HTTP mínimo para controlar el respaldo desde el PC. Solo acepta clientes de
- * la red local (direcciones privadas, link-local o loopback).
+ * API HTTP mínima que usa el panel central del PC para gestionar el respaldo. Solo acepta
+ * clientes de la red local (direcciones privadas, link-local o loopback).
  *
  * <pre>
- * GET  /             página de control
  * GET  /api/status   estado en JSON
- * POST /api/upload?name=archivo.ext   (cuerpo = archivo, con Content-Length)
+ * POST /api/upload?name=archivo.ext   (cuerpo = archivo, con Content-Length;
+ *                                      .zip = pase de diapositivas con config.json opcional)
  * POST /api/text     texto de respaldo (UTF-8)
  * POST /api/mode     camara | respaldo
  * POST /api/delete   borra el archivo de respaldo
@@ -200,10 +200,6 @@ final class WebServer {
     private void route(Request req, OutputStream out) throws IOException, JSONException {
         String key = req.method + " " + req.path;
         switch (key) {
-            case "GET /":
-            case "GET /index.html":
-                sendPage(out);
-                break;
             case "GET /api/status":
                 sendJson(out, 200, status());
                 break;
@@ -222,7 +218,8 @@ final class WebServer {
                 sendJson(out, 200, status());
                 break;
             default:
-                sendJson(out, 404, error("No encontrado: " + req.method + " " + req.path));
+                sendJson(out, 404, error("No encontrado: " + req.method + " " + req.path
+                        + ". Este equipo se gestiona desde el panel central."));
         }
     }
 
@@ -238,8 +235,13 @@ final class WebServer {
         if (f != null) {
             JSONObject file = new JSONObject();
             file.put("name", Backup.originalName(app));
-            file.put("type", Backup.type(f));
-            file.put("size", f.length());
+            String type = Backup.type(f);
+            file.put("type", type);
+            file.put("size", Backup.size(f));
+            if (Backup.TYPE_SLIDES.equals(type)) {
+                file.put("slides", Backup.slides(f).size());
+                file.put("seconds", Backup.slideSeconds(f));
+            }
             j.put("file", file);
         } else {
             j.put("file", JSONObject.NULL);
@@ -255,7 +257,7 @@ final class WebServer {
             return;
         }
         if (!Backup.isSupported(name)) {
-            sendJson(out, 415, error("Formato no admitido. Usa JPG, PNG, WEBP, MP4, MKV o WEBM"));
+            sendJson(out, 415, error("Formato no admitido. Usa JPG, PNG, WEBP, MP4, MKV, WEBM o ZIP de diapositivas"));
             return;
         }
         long len = req.contentLength();
@@ -292,7 +294,12 @@ final class WebServer {
                 sendJson(out, 400, error("Subida incompleta: llegaron " + received + " de " + len + " bytes"));
                 return;
             }
-            Backup.replace(app, temp, name);
+            try {
+                Backup.replace(app, temp, name);
+            } catch (IOException e) {
+                sendJson(out, 400, error(e.getMessage() != null ? e.getMessage() : "No se pudo guardar el archivo"));
+                return;
+            }
         } catch (IOException e) {
             //noinspection ResultOfMethodCallIgnored
             temp.delete();
@@ -373,16 +380,6 @@ final class WebServer {
 
     private static void sendJson(OutputStream out, int code, JSONObject json) throws IOException {
         send(out, code, "application/json; charset=utf-8", json.toString().getBytes(StandardCharsets.UTF_8));
-    }
-
-    private void sendPage(OutputStream out) throws IOException {
-        try (InputStream in = app.getAssets().open("index.html")) {
-            ByteArrayOutputStream b = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
-            send(out, 200, "text/html; charset=utf-8", b.toByteArray());
-        }
     }
 
     private static void send(OutputStream out, int code, String type, byte[] body) throws IOException {

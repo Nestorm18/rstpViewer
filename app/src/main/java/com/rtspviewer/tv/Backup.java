@@ -2,22 +2,42 @@ package com.rtspviewer.tv;
 
 import android.content.Context;
 
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
-/** Archivo de respaldo (imagen o vídeo) guardado en el almacenamiento privado de la app. */
+/**
+ * Contenido de respaldo guardado en el almacenamiento privado de la app: una imagen, un vídeo
+ * o un pase de diapositivas (se sube como ZIP con imágenes y un config.json opcional).
+ */
 final class Backup {
 
     static final Set<String> IMAGE_EXT = new HashSet<>(Arrays.asList("jpg", "jpeg", "png", "webp"));
     static final Set<String> VIDEO_EXT = new HashSet<>(Arrays.asList("mp4", "mkv", "webm"));
+    static final String SLIDES_EXT = "zip";
 
-    static final String TYPE_IMAGE = "imagen", TYPE_VIDEO = "video";
+    static final String TYPE_IMAGE = "imagen", TYPE_VIDEO = "video", TYPE_SLIDES = "diapositivas";
 
+    static final int DEFAULT_SLIDE_SECONDS = 8;
+    private static final int MAX_SLIDES = 100;
     private static final String TEMP_NAME = "subida.tmp";
+    private static final String EXTRACT_NAME = "descomprimiendo.tmp";
+    private static final String SLIDES_CONFIG = "config.json";
 
     private Backup() {}
 
@@ -35,6 +55,7 @@ final class Backup {
     static void cleanTemp(Context c) {
         //noinspection ResultOfMethodCallIgnored
         tempFile(c).delete();
+        deleteRecursive(new File(dir(c), EXTRACT_NAME));
     }
 
     /** Extensión en minúsculas, sin punto ("" si no tiene). */
@@ -45,19 +66,54 @@ final class Backup {
 
     static boolean isSupported(String name) {
         String e = ext(name);
-        return IMAGE_EXT.contains(e) || VIDEO_EXT.contains(e);
+        return IMAGE_EXT.contains(e) || VIDEO_EXT.contains(e) || SLIDES_EXT.equals(e);
     }
 
     static String type(File f) {
+        if (f.isDirectory()) return TYPE_SLIDES;
         return VIDEO_EXT.contains(ext(f.getName())) ? TYPE_VIDEO : TYPE_IMAGE;
     }
 
-    /** Archivo actual o null si no hay. */
+    /** Tamaño en bytes (la suma de las diapositivas si es un pase). */
+    static long size(File f) {
+        if (!f.isDirectory()) return f.length();
+        long total = 0;
+        File[] files = f.listFiles();
+        if (files != null) for (File x : files) total += x.length();
+        return total;
+    }
+
+    /** Imágenes de un pase de diapositivas, en orden por nombre. */
+    static List<File> slides(File dir) {
+        List<File> out = new ArrayList<>();
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) if (f.isFile() && IMAGE_EXT.contains(ext(f.getName()))) out.add(f);
+        }
+        Collections.sort(out, (a, b) -> a.getName().compareTo(b.getName()));
+        return out;
+    }
+
+    /** Segundos por diapositiva (config.json del pase, o 8). */
+    static int slideSeconds(File dir) {
+        try (InputStream in = new FileInputStream(new File(dir, SLIDES_CONFIG))) {
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
+            int s = new JSONObject(new String(b.toByteArray(), StandardCharsets.UTF_8)).optInt("seconds", DEFAULT_SLIDE_SECONDS);
+            return Math.max(1, Math.min(600, s));
+        } catch (Exception e) {
+            return DEFAULT_SLIDE_SECONDS;
+        }
+    }
+
+    /** Archivo o carpeta actual, o null si no hay. */
     static synchronized File current(Context c) {
         String stored = Prefs.get(c).getString(Prefs.BACKUP_FILE, "");
         if (stored.isEmpty()) return null;
         File f = new File(dir(c), stored);
-        return f.isFile() ? f : null;
+        return f.exists() ? f : null;
     }
 
     /** Nombre original con el que se subió. */
@@ -70,27 +126,78 @@ final class Backup {
     }
 
     /**
-     * Sustituye el archivo actual por {@code temp} (ya escrito completo). Cada archivo recibe
-     * un nombre nuevo para que la pantalla detecte el cambio aunque se llame igual.
+     * Sustituye el contenido actual por {@code temp} (ya escrito completo). Un ZIP se descomprime
+     * en una carpeta. Cada contenido recibe un nombre nuevo para que la pantalla detecte el cambio.
+     *
+     * @throws IOException con un mensaje para el usuario si el archivo no es válido
      */
     static synchronized void replace(Context c, File temp, String originalName) throws IOException {
         File old = current(c);
-        File dst = new File(dir(c), "respaldo_" + System.currentTimeMillis() + "." + ext(originalName));
-        if (!temp.renameTo(dst)) throw new IOException("No se pudo renombrar el archivo temporal");
+        String ext = ext(originalName);
+        File dst = new File(dir(c), "respaldo_" + System.currentTimeMillis() + (SLIDES_EXT.equals(ext) ? "" : "." + ext));
+        try {
+            if (SLIDES_EXT.equals(ext)) {
+                File work = new File(dir(c), EXTRACT_NAME);
+                deleteRecursive(work);
+                extractSlides(temp, work);
+                if (!work.renameTo(dst)) throw new IOException("No se pudo guardar el pase de diapositivas");
+            } else if (!temp.renameTo(dst)) {
+                throw new IOException("No se pudo renombrar el archivo temporal");
+            }
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+        }
         Prefs.get(c).edit()
                 .putString(Prefs.BACKUP_FILE, dst.getName())
                 .putString(Prefs.BACKUP_NAME, originalName)
                 .commit();
-        if (old != null && !old.equals(dst)) {
-            //noinspection ResultOfMethodCallIgnored
-            old.delete();
+        if (old != null && !old.equals(dst)) deleteRecursive(old);
+    }
+
+    /** Descomprime solo imágenes y config.json, sin subcarpetas (evita rutas maliciosas). */
+    private static void extractSlides(File zip, File out) throws IOException {
+        if (!out.mkdirs()) throw new IOException("No se pudo crear la carpeta del pase");
+        int images = 0;
+        try (ZipInputStream zin = new ZipInputStream(new FileInputStream(zip))) {
+            ZipEntry e;
+            byte[] buf = new byte[64 * 1024];
+            while ((e = zin.getNextEntry()) != null) {
+                if (e.isDirectory()) continue;
+                String name = new File(e.getName()).getName();
+                boolean image = IMAGE_EXT.contains(ext(name));
+                if (!image && !SLIDES_CONFIG.equals(name)) continue;
+                if (image && ++images > MAX_SLIDES) {
+                    throw new IOException("Demasiadas diapositivas (máximo " + MAX_SLIDES + ")");
+                }
+                try (FileOutputStream fos = new FileOutputStream(new File(out, name))) {
+                    int n;
+                    while ((n = zin.read(buf)) > 0) fos.write(buf, 0, n);
+                }
+            }
+        } catch (IOException ex) {
+            deleteRecursive(out);
+            throw ex.getMessage() != null && ex.getMessage().startsWith("Demasiadas")
+                    ? ex : new IOException("El ZIP de diapositivas no es válido");
+        }
+        if (images == 0) {
+            deleteRecursive(out);
+            throw new IOException("El ZIP no contiene imágenes JPG, PNG o WEBP");
         }
     }
 
-    /** Borra el archivo de respaldo. Devuelve true si había uno. */
+    /** Borra el contenido de respaldo. Devuelve true si había uno. */
     static synchronized boolean delete(Context c) {
         File f = current(c);
         Prefs.get(c).edit().remove(Prefs.BACKUP_FILE).remove(Prefs.BACKUP_NAME).commit();
-        return f != null && f.delete();
+        return f != null && deleteRecursive(f);
+    }
+
+    private static boolean deleteRecursive(File f) {
+        if (f.isDirectory()) {
+            File[] files = f.listFiles();
+            if (files != null) for (File x : files) deleteRecursive(x);
+        }
+        return f.delete();
     }
 }
