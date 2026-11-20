@@ -1004,7 +1004,7 @@ function newImage() { return { type:'imagen', image:null, fit:'contain' }; }
 
 // Esquela de ejemplo con datos inventados, para ver cómo queda y usarla de plantilla.
 function exampleEsquela() {
-  return { ...newEsquela(), heading:'La Señora', name:'Dña. María Ejemplo Pérez', age:'87',
+  return { ...newEsquela(), heading:'La Señora', name:'Dña. Nombre Apellido Apellido', age:'87',
     details: [
       'Falleció el día 18 de noviembre de 2026,',
       'confortada con los Santos Sacramentos.',
