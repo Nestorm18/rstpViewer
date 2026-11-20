@@ -9,16 +9,15 @@ final class Prefs {
             AUTOSTART = "autostart",
             MODE = "mode", BACKUP_TEXT = "backup_text", BACKUP_FILE = "backup_file", BACKUP_NAME = "backup_name";
 
-    /** Modos de pantalla. */
-    static final String MODE_AUTO = "auto", MODE_BACKUP = "respaldo", MODE_CAMERA = "camara";
+    /** Modos de pantalla: solo se cambia de uno a otro manualmente (desde el PC o el panel web). */
+    static final String MODE_BACKUP = "respaldo", MODE_CAMERA = "camara";
 
     static final String DEFAULT_BACKUP_TEXT = "Cámara no disponible";
 
     private Prefs() {}
 
     static String mode(Context c) {
-        String m = get(c).getString(MODE, MODE_AUTO);
-        return MODE_BACKUP.equals(m) || MODE_CAMERA.equals(m) ? m : MODE_AUTO;
+        return MODE_BACKUP.equals(get(c).getString(MODE, MODE_CAMERA)) ? MODE_BACKUP : MODE_CAMERA;
     }
 
     static String backupText(Context c) {

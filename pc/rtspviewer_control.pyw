@@ -33,8 +33,9 @@ IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".webm"}
 PPT_EXT = {".pptx", ".ppt", ".ppsx", ".pps"}
 
-MODES = [("auto", "Automático"), ("respaldo", "Siempre respaldo"), ("camara", "Siempre cámara")]
-CAMERA_TEXT = {"ok": "Funciona", "fallo": "Fallo", "conectando": "Conectando…", "parada": "Parada (modo respaldo)"}
+MODES = [("camara", "Cámara"), ("respaldo", "Respaldo")]
+CAMERA_TEXT = {"ok": "Funciona", "fallo": "Fallo", "conectando": "Conectando…",
+               "parada": "Desconectada (mostrando respaldo)"}
 SHOWING_TEXT = {"camara": "Cámara", "respaldo": "Respaldo", "ninguno": "Nada (la app no está en pantalla)"}
 
 
@@ -310,10 +311,10 @@ class App(tk.Tk):
             self.st[key] = v
 
         # Modo
-        f = ttk.LabelFrame(root, text="Modo")
+        f = ttk.LabelFrame(root, text="Qué mostrar en la tele")
         f.grid(row=2, column=0, sticky="ew", **pad)
         self.mode_var = tk.StringVar()
-        cb = ttk.Combobox(f, textvariable=self.mode_var, state="readonly", width=28,
+        cb = ttk.Combobox(f, textvariable=self.mode_var, state="readonly", width=20,
                           values=[label for _, label in MODES])
         cb.grid(row=0, column=0, padx=6, pady=8, sticky="w")
         cb.bind("<<ComboboxSelected>>", lambda _: self.send_mode())
@@ -520,7 +521,7 @@ class App(tk.Tk):
             self.mode_sending = False
             self.last_mode = None
             self.show_status(s)
-            self.say(f"Modo cambiado a «{label}».")
+            self.say(f"La tele muestra ahora: {label.lower()}.")
 
         def fail(m):
             self.mode_sending = False

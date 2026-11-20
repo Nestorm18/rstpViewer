@@ -30,13 +30,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Muestra la cámara a pantalla completa y, según el modo, un contenido de respaldo
- * (vídeo en bucle, imagen o texto). OK / Menú en el control abre la configuración.
+ * Muestra la cámara a pantalla completa o, si se elige manualmente el modo respaldo,
+ * un contenido de respaldo (vídeo en bucle, imagen o texto). OK / Menú abre la configuración.
  */
 public class MainActivity extends Activity {
 
     private static final long RETRY_MS = 5000;
-    /** En modo auto, si la cámara no está lista en este tiempo se muestra el respaldo. */
+    /** Si la cámara no está lista en este tiempo se considera caída y se reintenta. */
     private static final long CONNECT_TIMEOUT_MS = 10_000;
 
     // Baja latencia: empezar a mostrar con muy poco vídeo en el buffer.
@@ -156,29 +156,17 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // Modo cámara
+        hideBackup();
         if (player == null) {
             if (Prefs.isConfigured(this)) {
                 startPlayer();
             } else {
                 app.cameraState = App.CAM_FAIL;
             }
-        }
-
-        if (Prefs.MODE_CAMERA.equals(mode)) {
-            hideBackup();
-            if (App.CAM_FAIL.equals(app.cameraState)) showStatus(getString(R.string.reconnecting));
         } else if (App.CAM_FAIL.equals(app.cameraState)) {
-            showBackup(); // auto con la cámara caída
-        } else if (App.CAM_OK.equals(app.cameraState)) {
-            hideBackup();
+            showStatus(getString(R.string.reconnecting));
         }
-        // auto + conectando: decide onConnectTimeout / onPlaybackStateChanged
-
-        if (backupShown) loadBackupContent();
-    }
-
-    private boolean isAuto() {
-        return Prefs.MODE_AUTO.equals(Prefs.mode(this));
     }
 
     // ---------------------------------------------------------------- cámara
@@ -234,7 +222,6 @@ public class MainActivity extends Activity {
         handler.removeCallbacks(connectTimeout);
         app.cameraState = App.CAM_OK;
         status.setVisibility(View.GONE);
-        if (!Prefs.MODE_BACKUP.equals(Prefs.mode(this))) hideBackup();
         handler.removeCallbacks(latencyCheck);
         handler.postDelayed(latencyCheck, LATENCY_CHECK_MS);
     }
@@ -242,11 +229,7 @@ public class MainActivity extends Activity {
     private void onCameraFailed(String message) {
         handler.removeCallbacks(connectTimeout);
         app.cameraState = App.CAM_FAIL;
-        if (isAuto()) {
-            showBackup();
-        } else {
-            showStatus(message);
-        }
+        showStatus(message);
         scheduleRetry();
     }
 

@@ -34,7 +34,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * GET  /api/status   estado en JSON
  * POST /api/upload?name=archivo.ext   (cuerpo = archivo, con Content-Length)
  * POST /api/text     texto de respaldo (UTF-8)
- * POST /api/mode     auto | respaldo | camara
+ * POST /api/mode     camara | respaldo
  * POST /api/delete   borra el archivo de respaldo
  * </pre>
  */
@@ -323,8 +323,8 @@ final class WebServer {
     private void setMode(Request req, OutputStream out) throws IOException, JSONException {
         String body = readSmallBody(req);
         String mode = body == null ? "" : body.trim().toLowerCase(Locale.ROOT).replace("á", "a");
-        if (!mode.equals(Prefs.MODE_AUTO) && !mode.equals(Prefs.MODE_BACKUP) && !mode.equals(Prefs.MODE_CAMERA)) {
-            sendJson(out, 400, error("Modo no válido. Usa: auto, respaldo o camara"));
+        if (!mode.equals(Prefs.MODE_BACKUP) && !mode.equals(Prefs.MODE_CAMERA)) {
+            sendJson(out, 400, error("Modo no válido. Usa: camara o respaldo"));
             return;
         }
         Prefs.get(app).edit().putString(Prefs.MODE, mode).commit();

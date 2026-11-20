@@ -7,7 +7,7 @@ App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire
 - Configuración con el mando: IP, puerto, usuario, contraseña y ruta del stream.
 - Reconexión automática cada 5 s si se cae la conexión.
 - Transporte RTP sobre TCP (opcional, más estable en Wi-Fi).
-- **Modo respaldo:** si la cámara falla, muestra una imagen, un vídeo o un texto.
+- **Modo respaldo:** cuando lo eliges, muestra una imagen, un vídeo o un texto en lugar de la cámara.
 - **Control desde el PC por la red local**, con un programa para Windows o desde el navegador.
 - Basada en [AndroidX Media3 / ExoPlayer](https://developer.android.com/media/media3).
 
@@ -32,16 +32,16 @@ rtsp://usuario:contraseña@IP:puerto/ruta
 | Ezviz | `/h264/ch1/main/av_stream` (usuario `admin`, contraseña = código de verificación de la etiqueta) |
 
 ## Modo respaldo
-Para cuando la cámara no funciona. El contenido de respaldo puede ser:
+Para cuando la cámara no funciona. El cambio entre cámara y respaldo es **solo manual**: la app nunca cambia sola.
+El contenido de respaldo puede ser:
 - **Un vídeo** (MP4, MKV o WEBM), que se reproduce en bucle y sin sonido.
 - **Una imagen** (JPG, PNG o WEBP), que se reduce a 1920×1080 como máximo.
 - **Un texto** grande y centrado, si no hay archivo. Por defecto es «Cámara no disponible».
 
 | Modo | Qué se ve |
 |---|---|
-| **Automático** (por defecto) | La cámara. Si da error o no conecta en 10 s, el respaldo, mientras sigue reintentando la cámara cada 5 s. Cuando la cámara vuelve, se quita el respaldo. |
-| **Siempre respaldo** | Siempre el respaldo. La cámara no se conecta. |
-| **Siempre cámara** | Solo la cámara, nunca el respaldo. |
+| **Cámara** (por defecto) | La cámara. Si falla, se muestra un aviso y se reintenta cada 5 s. |
+| **Respaldo** | El contenido de respaldo. La cámara se desconecta. |
 
 Todo se gestiona por la red y los cambios se aplican al momento, sin reiniciar la app. El stick guarda el archivo, el texto y el modo, así que el PC puede apagarse después.
 En la pantalla de ajustes se ve la dirección de control (`http://IP_DEL_STICK:8080`) y también se puede escribir el texto de respaldo.
@@ -55,7 +55,7 @@ Se abre con doble clic si tienes Python instalado. Para tener un `.exe` que no n
 - **Elegir archivo y enviar:** sirve para imágenes, vídeos y **PowerPoint** (`.pptx`, `.ppt`, `.ppsx`). El PowerPoint se convierte con el PowerPoint instalado en el PC antes de enviarlo:
   - Si tiene 1 diapositiva, se convierte en una imagen JPG de 1920 px de ancho.
   - Si tiene varias, se convierte en un vídeo MP4 de 1080p con *N* segundos por diapositiva (8 por defecto, configurable).
-- **Texto de respaldo**, **modo** y **borrar archivo**.
+- **Qué mostrar en la tele** (cámara o respaldo), **texto de respaldo** y **borrar archivo**.
 
 La configuración (IP y segundos por diapositiva) se guarda en `rtspviewer_control.json`, junto al programa.
 
@@ -70,11 +70,11 @@ El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local 
 | `GET /api/status` | – | Estado en JSON (ver abajo) |
 | `POST /api/upload?name=archivo.ext` | el archivo, con `Content-Length` | Sustituye el archivo de respaldo. Primero se guarda en un temporal y luego se renombra. Se rechaza si no cabe (se dejan 50 MB libres). |
 | `POST /api/text` | texto UTF-8 (máx. 500) | Texto de respaldo. Si va vacío, se usa el texto por defecto. |
-| `POST /api/mode` | `auto`, `respaldo` o `camara` | Cambia el modo |
+| `POST /api/mode` | `camara` o `respaldo` | Cambia lo que se muestra |
 | `POST /api/delete` | – | Borra el archivo de respaldo |
 
 ```json
-{"app":"RTSPViewer","version":"1.1","camera":"ok","showing":"camara","mode":"auto",
+{"app":"RTSPViewer","version":"1.1","camera":"ok","showing":"camara","mode":"camara",
  "text":"Cámara no disponible","file":{"name":"aviso.mp4","type":"video","size":5242880},"freeBytes":3400000000}
 ```
 - `camera` puede ser `ok`, `fallo`, `conectando` o `parada` (en modo respaldo).

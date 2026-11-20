@@ -43,11 +43,10 @@
   </section>
 
   <section>
-    <h2>Modo</h2>
+    <h2>Qué mostrar en la tele</h2>
     <select id="mode">
-      <option value="auto">Automático (respaldo si falla la cámara)</option>
-      <option value="respaldo">Siempre respaldo</option>
-      <option value="camara">Siempre cámara</option>
+      <option value="camara">Cámara</option>
+      <option value="respaldo">Respaldo</option>
     </select>
   </section>
 
@@ -67,7 +66,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const CAM = { ok:['Funciona','ok'], fallo:['Fallo','bad'], conectando:['Conectando…','warn'], parada:['Parada (modo respaldo)',''] };
+const CAM = { ok:['Funciona','ok'], fallo:['Fallo','bad'], conectando:['Conectando…','warn'], parada:['Desconectada (mostrando respaldo)',''] };
 const SHOW = { camara:'Cámara', respaldo:'Respaldo', ninguno:'Nada (app en segundo plano)' };
 let textTouched = false, modeBusy = false;
 
