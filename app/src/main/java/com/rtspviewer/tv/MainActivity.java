@@ -101,7 +101,7 @@ public class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         hideSystemUi();
-        if (!Prefs.isConfigured(this) && !Prefs.MODE_BACKUP.equals(Prefs.mode(this))) {
+        if (!Prefs.isConfigured(this) && Prefs.MODE_CAMERA.equals(Prefs.mode(this))) {
             openSettings();
             return;
         }
@@ -161,7 +161,7 @@ public class MainActivity extends Activity {
     /** Aplica el modo y el contenido de respaldo actuales (al iniciar y cuando cambian por red). */
     private void applyConfig() {
         String mode = Prefs.mode(this);
-        if (Prefs.MODE_BACKUP.equals(mode)) {
+        if (!Prefs.MODE_CAMERA.equals(mode)) { // esquela o imagen
             handler.removeCallbacks(retry);
             handler.removeCallbacks(connectTimeout);
             releasePlayer();
@@ -285,7 +285,7 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- respaldo
 
     private void showBackup() {
-        app.showing = App.SHOW_BACKUP;
+        app.showing = Prefs.mode(this);
         status.setVisibility(View.GONE);
         if (!backupShown) {
             backupShown = true;
@@ -310,9 +310,10 @@ public class MainActivity extends Activity {
 
     /** Carga el archivo o el texto de respaldo si ha cambiado desde la última vez. */
     private void loadBackupContent() {
-        File file = Backup.current(this);
+        String slot = Prefs.mode(this);
+        File file = Backup.current(this, slot);
         String text = Prefs.backupText(this);
-        String key = file == null ? "text:" + text : "file:" + file.getAbsolutePath();
+        String key = file == null ? "text:" + slot + ":" + text : "file:" + file.getAbsolutePath();
         if (key.equals(loadedBackupKey)) return;
         loadedBackupKey = key;
 

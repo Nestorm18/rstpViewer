@@ -28,8 +28,7 @@ pc/dist/
 pc/*.spec
 __pycache__/
 
-pc/panel_central.json
-pc/panel_central.json.tmp
+pc/panel_central.json*
 
 # Archivos locales de trabajo
 temp/

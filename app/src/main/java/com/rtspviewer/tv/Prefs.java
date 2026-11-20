@@ -9,15 +9,19 @@ final class Prefs {
             AUTOSTART = "autostart",
             MODE = "mode", BACKUP_TEXT = "backup_text", BACKUP_FILE = "backup_file", BACKUP_NAME = "backup_name";
 
-    /** Modos de pantalla: solo se cambia de uno a otro manualmente (desde el PC o el panel web). */
-    static final String MODE_BACKUP = "respaldo", MODE_CAMERA = "camara";
+    /**
+     * Qué se muestra; solo se cambia manualmente desde el panel central. "esquela" e "imagen"
+     * son también los nombres de los dos huecos de contenido guardados (ver {@link Backup}).
+     */
+    static final String MODE_CAMERA = "camara", MODE_ESQUELA = "esquela", MODE_IMAGEN = "imagen";
 
     static final String DEFAULT_BACKUP_TEXT = "Cámara no disponible";
 
     private Prefs() {}
 
     static String mode(Context c) {
-        return MODE_BACKUP.equals(get(c).getString(MODE, MODE_CAMERA)) ? MODE_BACKUP : MODE_CAMERA;
+        String m = get(c).getString(MODE, MODE_CAMERA);
+        return MODE_ESQUELA.equals(m) || MODE_IMAGEN.equals(m) ? m : MODE_CAMERA;
     }
 
     static String backupText(Context c) {

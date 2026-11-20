@@ -10,7 +10,7 @@
     <string name="path_help">Hikvision: /Streaming/Channels/101 · Dahua/Imou: /cam/realmonitor?channel=1&amp;subtype=0 · TP-Link Tapo: /stream1 · Ezviz: /h264/ch1/main/av_stream</string>
     <string name="tcp">Usar TCP (más estable)</string>
     <string name="autostart">Iniciar al encender</string>
-    <string name="backup_text">Texto de respaldo (si la cámara falla y no hay archivo)</string>
+    <string name="backup_text">Texto si no hay esquelas o imagen</string>
     <string name="backup_text_hint">Cámara no disponible</string>
     <string name="remote_url_fmt">IP de este equipo (para el panel central): %1$s</string>
     <string name="remote_url_none">Sin conexión de red: el panel central no podrá gestionar este equipo</string>

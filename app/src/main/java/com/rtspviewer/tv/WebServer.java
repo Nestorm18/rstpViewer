@@ -31,11 +31,12 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <pre>
  * GET  /api/status   estado en JSON
- * POST /api/upload?name=archivo.ext   (cuerpo = archivo, con Content-Length;
- *                                      .zip = pase de diapositivas con config.json opcional)
+ * POST /api/upload?name=archivo.ext[&slot=esquela|imagen]
+ *                    (cuerpo = archivo, con Content-Length; .zip = pase de diapositivas
+ *                     con config.json opcional; por defecto .zip → esquela, el resto → imagen)
  * POST /api/text     texto de respaldo (UTF-8)
- * POST /api/mode     camara | respaldo
- * POST /api/delete   borra el archivo de respaldo
+ * POST /api/mode     camara | esquela | imagen
+ * POST /api/delete[?slot=esquela|imagen]   borra un hueco o los dos
  * </pre>
  */
 final class WebServer {
@@ -213,9 +214,7 @@ final class WebServer {
                 setMode(req, out);
                 break;
             case "POST /api/delete":
-                Backup.delete(app);
-                app.notifyConfigChanged();
-                sendJson(out, 200, status());
+                delete(req, out);
                 break;
             default:
                 sendJson(out, 404, error("No encontrado: " + req.method + " " + req.path
@@ -231,10 +230,15 @@ final class WebServer {
         j.put("showing", app.showing);
         j.put("mode", Prefs.mode(app));
         j.put("text", Prefs.backupText(app));
-        File f = Backup.current(app);
-        if (f != null) {
+        JSONObject files = new JSONObject();
+        for (String slot : Backup.SLOTS) {
+            File f = Backup.current(app, slot);
+            if (f == null) {
+                files.put(slot, JSONObject.NULL);
+                continue;
+            }
             JSONObject file = new JSONObject();
-            file.put("name", Backup.originalName(app));
+            file.put("name", Backup.originalName(app, slot));
             String type = Backup.type(f);
             file.put("type", type);
             file.put("size", Backup.size(f));
@@ -242,16 +246,24 @@ final class WebServer {
                 file.put("slides", Backup.slides(f).size());
                 file.put("seconds", Backup.slideSeconds(f));
             }
-            j.put("file", file);
-        } else {
-            j.put("file", JSONObject.NULL);
+            files.put(slot, file);
         }
+        j.put("files", files);
         j.put("freeBytes", Backup.freeSpace(app));
         return j;
     }
 
     private void upload(Request req, OutputStream out) throws IOException, JSONException {
         String name = sanitizeName(req.query.get("name"));
+        // Hueco donde se guarda: por defecto, un ZIP de diapositivas va a "esquela" y lo demás a "imagen".
+        String slot = req.query.get("slot");
+        if (slot == null || slot.isEmpty()) {
+            slot = Backup.SLIDES_EXT.equals(Backup.ext(name)) ? Backup.SLOT_ESQUELA : Backup.SLOT_IMAGEN;
+        }
+        if (!Backup.isSlot(slot)) {
+            sendJson(out, 400, error("Hueco no válido. Usa slot=esquela o slot=imagen"));
+            return;
+        }
         if (name.isEmpty()) {
             sendJson(out, 400, error("Falta el parámetro name (ejemplo: /api/upload?name=foto.jpg)"));
             return;
@@ -295,7 +307,7 @@ final class WebServer {
                 return;
             }
             try {
-                Backup.replace(app, temp, name);
+                Backup.replace(app, temp, name, slot);
             } catch (IOException e) {
                 sendJson(out, 400, error(e.getMessage() != null ? e.getMessage() : "No se pudo guardar el archivo"));
                 return;
@@ -330,11 +342,29 @@ final class WebServer {
     private void setMode(Request req, OutputStream out) throws IOException, JSONException {
         String body = readSmallBody(req);
         String mode = body == null ? "" : body.trim().toLowerCase(Locale.ROOT).replace("á", "a");
-        if (!mode.equals(Prefs.MODE_BACKUP) && !mode.equals(Prefs.MODE_CAMERA)) {
-            sendJson(out, 400, error("Modo no válido. Usa: camara o respaldo"));
+        if (!mode.equals(Prefs.MODE_CAMERA) && !Backup.isSlot(mode)) {
+            sendJson(out, 400, error("Modo no válido. Usa: camara, esquela o imagen"));
             return;
         }
         Prefs.get(app).edit().putString(Prefs.MODE, mode).commit();
+        app.notifyConfigChanged();
+        sendJson(out, 200, status());
+    }
+
+    /** Borra un hueco (?slot=esquela|imagen) o los dos. Si se estaba viendo, vuelve a la cámara. */
+    private void delete(Request req, OutputStream out) throws IOException, JSONException {
+        String slot = req.query.get("slot");
+        if (slot != null && !slot.isEmpty() && !Backup.isSlot(slot)) {
+            sendJson(out, 400, error("Hueco no válido. Usa slot=esquela o slot=imagen"));
+            return;
+        }
+        String mode = Prefs.mode(app);
+        for (String s : Backup.SLOTS) {
+            if (slot == null || slot.isEmpty() || slot.equals(s)) {
+                Backup.delete(app, s);
+                if (s.equals(mode)) Prefs.get(app).edit().putString(Prefs.MODE, Prefs.MODE_CAMERA).commit();
+            }
+        }
         app.notifyConfigChanged();
         sendJson(out, 200, status());
     }

@@ -23,7 +23,7 @@ public class App extends Application {
     // Estado de la cámara
     static final String CAM_OK = "ok", CAM_FAIL = "fallo", CAM_CONNECTING = "conectando", CAM_STOPPED = "parada";
     // Qué se ve en pantalla
-    static final String SHOW_CAMERA = "camara", SHOW_BACKUP = "respaldo", SHOW_NONE = "ninguno";
+    static final String SHOW_CAMERA = "camara", SHOW_NONE = "ninguno"; // o el hueco que se ve: esquela / imagen
 
     volatile String cameraState = CAM_STOPPED;
     volatile String showing = SHOW_NONE;

@@ -7,7 +7,7 @@ App mínima para **Android TV** (Xiaomi TV Stick, Chromecast con Google TV, Fire
 - Configuración con el mando: IP, puerto, usuario, contraseña y ruta del stream.
 - Reconexión automática cada 5 s si se cae la conexión.
 - Transporte RTP sobre TCP (opcional, más estable en Wi-Fi).
-- **Modo respaldo:** cuando lo eliges, muestra una imagen, un vídeo o un texto en lugar de la cámara.
+- **Mostrar cámara, esquelas o imagen**, a elegir desde el panel central.
 - **Control por la red local:** un panel central en Windows para todos los equipos a la vez, con editor de esquelas.
 - Funciona en **TV sticks y en tablets** Android.
 - Basada en [AndroidX Media3 / ExoPlayer](https://developer.android.com/media/media3).
@@ -34,21 +34,20 @@ rtsp://usuario:contraseña@IP:puerto/ruta
 | TP-Link Tapo | `/stream1` (`/stream2` = calidad baja). La cuenta de cámara se crea en la app Tapo → Ajustes avanzados → Cuenta de la cámara |
 | Ezviz | `/h264/ch1/main/av_stream` (usuario `admin`, contraseña = código de verificación de la etiqueta) |
 
-## Modo respaldo
-Para cuando la cámara no funciona. El cambio entre cámara y respaldo es **solo manual**: la app nunca cambia sola.
-El contenido de respaldo puede ser:
-- **Un vídeo** (MP4, MKV o WEBM), que se reproduce en bucle y sin sonido.
-- **Una imagen** (JPG, PNG o WEBP), que se reduce a 1920×1080 como máximo.
-- **Un pase de diapositivas** (esquelas e imágenes) creado con el editor del panel central, que pasan en bucle con un fundido y el mismo tiempo cada una.
-- **Un texto** grande y centrado, si no hay archivo. Por defecto es «Cámara no disponible».
+## Qué se muestra: cámara, esquelas o imagen
+Cada equipo puede mostrar una de tres cosas. Se elige **solo a mano** desde el panel central: la app nunca cambia sola.
 
-| Modo | Qué se ve |
+| Mostrar | Qué se ve |
 |---|---|
 | **Cámara** (por defecto) | La cámara. Si falla, se muestra un aviso y se reintenta cada 5 s. |
-| **Respaldo** | El contenido de respaldo. La cámara se desconecta. |
+| **Esquelas** | El pase de esquelas creado en el editor del panel: en bucle, con un fundido y el mismo tiempo cada una. |
+| **Imagen** | Una imagen (JPG, PNG, WEBP; se reduce a 1920×1080 como máximo), un vídeo (MP4, MKV, WEBM; en bucle y sin sonido) o un PowerPoint convertido. |
 
-Todo se gestiona por la red y los cambios se aplican al momento, sin reiniciar la app. El stick guarda el archivo, el texto y el modo, así que el PC puede apagarse después.
-En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel central) y también se puede escribir el texto de respaldo.
+Cada equipo guarda **por separado** sus esquelas y su imagen, así que se puede cambiar entre las tres sin volver a enviarlas.
+Al enviar esquelas o una imagen, se muestran al momento. Si se elige «Esquelas» o «Imagen» en un equipo que no tiene ese contenido, se ve un texto grande (por defecto «Cámara no disponible»).
+
+Los cambios se aplican al momento, sin reiniciar la app. El equipo lo guarda todo, así que el PC puede apagarse después.
+En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel central) y también se puede escribir ese texto.
 
 ### Panel central (varios equipos a la vez)
 [`pc/panel_central.py`](pc/panel_central.py) es un servidor web para Windows que gestiona **todos los equipos a la vez**, sean TV sticks o tablets. Es un solo archivo que solo usa la biblioteca estándar de Python 3.
@@ -56,15 +55,17 @@ En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel centra
 - **Abrirlo:** doble clic en [`pc/iniciar_panel.bat`](pc/iniciar_panel.bat). Se abre una ventana negra con las direcciones y el navegador en `http://localhost:8000`. Para tenerlo sin Python, [`pc/crear_exe.bat`](pc/crear_exe.bat) crea `PanelCentral.exe` con PyInstaller.
 - **Desde otros PCs o el móvil:** abre `http://IP_DEL_PC:8000`. La dirección exacta aparece en la ventana negra. La primera vez, Windows pregunta si permite a Python usar la red: acepta para **redes privadas**.
 - **Equipos:** **Buscar en la red** añade todos los que encuentre en la red local /24. También se pueden añadir a mano con su IP y un nombre. Si haces clic en el nombre, lo puedes cambiar.
-- **Tabla de estado** de cada equipo: conexión, cámara, qué muestra, archivo y espacio libre. Se actualiza sola.
-- **Editor de esquelas y diapositivas** (no necesita PowerPoint):
+- **Tabla de estado** de cada equipo: conexión, cámara, qué está mostrando, qué esquelas e imagen tiene guardadas y espacio libre. Se actualiza sola.
+- **Mostrar: Cámara · Esquelas · Imagen** cambia lo que se ve en los equipos marcados.
+- **Esquelas**, con un editor que no necesita PowerPoint:
   - **+ Esquela:** encabezado («La Señora», «El Señor»…), nombre, edad (si pones «87», sale «87 años»), detalles (las líneas que terminan en «:» salen en negrita), cruz y D.E.P. Siempre con fondo blanco. Admite una imagen opcional, que puede ir **debajo de la esquela, alargada** (por ejemplo, la foto de un servicio o un lugar) o **a la izquierda, en vertical** (la foto de la persona).
   - **+ Imagen:** una foto o un cartel a pantalla completa, entera o recortada para llenar la pantalla.
   - Las diapositivas se ordenan con ↑ ↓, se ven en una vista previa y todas duran el mismo tiempo (segundos configurables).
-  - **Enviar diapositivas** las dibuja a 1920×1080 y las reparte a los equipos marcados. Después, pulsa **Mostrar respaldo** para que se vean.
+  - **Enviar y mostrar** las dibuja a 1920×1080, las reparte a los equipos marcados y las muestra al momento. **Borrar esquelas de los equipos** las elimina; si se estaban viendo, el equipo vuelve a la cámara.
   - Lo que hay en el editor se guarda en el navegador, así que no se pierde al cerrar la página.
-- **Acciones sobre los equipos marcados:** mostrar cámara o respaldo, enviar archivo (con el progreso de cada equipo), enviar texto y borrar archivo. Si un equipo está apagado, se marca en rojo y el resto se actualiza igual.
-- **PowerPoint** (`.pptx`, `.ppt`, `.ppsx`): se convierte **una sola vez** con el PowerPoint instalado en el PC donde corre el panel, y se reparte a todos los equipos marcados:
+- **Imagen:** **Enviar y mostrar** reparte una imagen, un vídeo o un PowerPoint a los equipos marcados (con el progreso de cada uno) y la muestra al momento. **Borrar imagen** la elimina; si se estaba viendo, el equipo vuelve a la cámara.
+- Si un equipo está apagado, se marca en rojo y el resto se actualiza igual.
+- **PowerPoint en «Imagen»** (`.pptx`, `.ppt`, `.ppsx`): se convierte **una sola vez** con el PowerPoint instalado en el PC donde corre el panel, y se reparte a todos los equipos marcados:
   - Si tiene 1 diapositiva, se convierte en una imagen JPG de 1920 px de ancho.
   - Si tiene varias, se convierte en un vídeo MP4 de 1080p con *N* segundos por diapositiva (8 por defecto, configurable en la web).
 
@@ -72,29 +73,30 @@ La lista de equipos y los ajustes se guardan en `pc/panel_central.json`. Ahí se
 Al cerrar la ventana negra se detiene el panel, pero los equipos siguen mostrando lo último que se les envió.
 
 ### API HTTP
-El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local (privadas, link-local o loopback). No tiene contraseña, así que cualquiera en tu red local puede cambiar el respaldo.
+El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local (privadas, link-local o loopback). No tiene contraseña, así que cualquiera en tu red local puede cambiar lo que se muestra.
 
 | Petición | Cuerpo | Descripción |
 |---|---|---|
 | `GET /api/status` | – | Estado en JSON (ver abajo) |
-| `POST /api/upload?name=archivo.ext` | el archivo, con `Content-Length` | Sustituye el archivo de respaldo. Primero se guarda en un temporal y luego se renombra. Se rechaza si no cabe (se dejan 50 MB libres). Un `.zip` es un pase de diapositivas: imágenes JPG, PNG o WEBP (en orden por nombre) y un `config.json` opcional con `{"seconds": 8}`. |
-| `POST /api/text` | texto UTF-8 (máx. 500) | Texto de respaldo. Si va vacío, se usa el texto por defecto. |
-| `POST /api/mode` | `camara` o `respaldo` | Cambia lo que se muestra |
-| `POST /api/delete` | – | Borra el archivo de respaldo |
+| `POST /api/upload?name=archivo.ext&slot=esquela\|imagen` | el archivo, con `Content-Length` | Sustituye el contenido de ese hueco (por defecto, un `.zip` va a `esquela` y lo demás a `imagen`). No cambia lo que se muestra. Primero se guarda en un temporal y luego se renombra. Se rechaza si no cabe (se dejan 50 MB libres). Un `.zip` es un pase de diapositivas: imágenes JPG, PNG o WEBP (en orden por nombre) y un `config.json` opcional con `{"seconds": 8}`. |
+| `POST /api/text` | texto UTF-8 (máx. 500) | Texto que se ve si el hueco elegido está vacío. Si va vacío, se usa el texto por defecto. |
+| `POST /api/mode` | `camara`, `esquela` o `imagen` | Cambia lo que se muestra |
+| `POST /api/delete?slot=esquela\|imagen` | – | Borra ese hueco (sin `slot`, los dos). Si se estaba viendo, vuelve a la cámara. |
 
 ```json
-{"app":"RTSPViewer","version":"1.1","camera":"ok","showing":"camara","mode":"camara",
- "text":"Cámara no disponible","file":{"name":"aviso.mp4","type":"video","size":5242880},"freeBytes":3400000000}
+{"app":"RTSPViewer","version":"1.3","camera":"ok","showing":"camara","mode":"camara","text":"Cámara no disponible",
+ "files":{"esquela":{"name":"Esquela.zip","type":"diapositivas","size":254748,"slides":3,"seconds":8},
+          "imagen":{"name":"aviso.mp4","type":"video","size":5242880}},"freeBytes":3400000000}
 ```
-- `camera` puede ser `ok`, `fallo`, `conectando` o `parada` (en modo respaldo).
-- `showing` puede ser `camara`, `respaldo` o `ninguno` (la app no está en pantalla).
+- `camera` puede ser `ok`, `fallo`, `conectando` o `parada` (cuando se muestran esquelas o imagen).
+- `showing` puede ser `camara`, `esquela`, `imagen` o `ninguno` (la app no está en pantalla).
 - Los errores devuelven `{"error":"mensaje"}` con un código HTTP 4xx o 5xx.
 
 Ejemplos con `curl`:
 ```bash
 curl http://IP_DEL_STICK:8080/api/status
-curl -X POST --data-binary @aviso.mp4 "http://IP_DEL_STICK:8080/api/upload?name=aviso.mp4"
-curl -X POST --data-binary "respaldo" http://IP_DEL_STICK:8080/api/mode
+curl -X POST --data-binary @aviso.mp4 "http://IP_DEL_STICK:8080/api/upload?name=aviso.mp4&slot=imagen"
+curl -X POST --data-binary "imagen" http://IP_DEL_STICK:8080/api/mode
 ```
 
 ## Compilar

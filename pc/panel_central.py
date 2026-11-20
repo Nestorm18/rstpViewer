@@ -38,6 +38,7 @@ CHUNK = 256 * 1024
 SPACE_MARGIN = 50 * 1048576
 MAX_SLIDESHOW_BYTES = 200 * 1048576
 
+MODES = {"camara": "Cámara", "esquela": "Esquelas", "imagen": "Imagen"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXT = {".mp4", ".mkv", ".webm"}
 PPT_EXT = {".pptx", ".ppt", ".ppsx", ".pps"}
@@ -63,10 +64,20 @@ class Config:
         self.lock = threading.Lock()
         self.data = {"port": 8000, "seconds_per_slide": 8, "open_browser": True, "devices": []}
         try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
+            # utf-8-sig: acepta el BOM que añaden algunos editores (Bloc de notas, PowerShell)
+            with open(CONFIG_PATH, encoding="utf-8-sig") as f:
                 self.data.update(json.load(f))
-        except (OSError, ValueError):
+        except FileNotFoundError:
             pass
+        except (OSError, ValueError) as e:
+            # No perder la lista de equipos: guardar una copia del archivo dañado antes de empezar de cero.
+            backup = CONFIG_PATH + ".dañado"
+            try:
+                shutil.copyfile(CONFIG_PATH, backup)
+            except OSError:
+                pass
+            print(f"Aviso: no se pudo leer {CONFIG_PATH} ({e}).")
+            print(f"Se ha guardado una copia en {backup} y se empieza con una configuración nueva.")
         self.save()
 
     def save(self):
@@ -166,11 +177,11 @@ def dev_post(ip, path, body=b""):
         conn.close()
 
 
-def dev_upload(ip, path, name, progress):
+def dev_upload(ip, path, name, slot, progress):
     size = os.path.getsize(path)
     conn = http.client.HTTPConnection(ip, DEVICE_PORT, timeout=60)
     try:
-        conn.putrequest("POST", "/api/upload?name=" + urllib.parse.quote(name))
+        conn.putrequest("POST", "/api/upload?name=" + urllib.parse.quote(name) + "&slot=" + slot)
         conn.putheader("Content-Type", "application/octet-stream")
         conn.putheader("Content-Length", str(size))
         conn.endheaders()
@@ -272,7 +283,8 @@ def run_on(ips, label, fn):
     threading.Thread(target=all_, daemon=True).start()
 
 
-def upload_job(src_path, name, ips, seconds, workdir):
+def upload_job(src_path, name, ips, seconds, workdir, slot):
+    """Envía el archivo al hueco «slot» (esquela o imagen) de cada equipo y lo muestra al momento."""
     try:
         ext = os.path.splitext(name)[1].lower()
         up_path, up_name = src_path, name
@@ -310,9 +322,10 @@ def upload_job(src_path, name, ips, seconds, workdir):
                         STATE.set_task(ip, f"Enviando {int(p * 100)} %", progress=p)
 
                 STATE.set_task(ip, "Enviando 0 %", progress=0)
-                data = dev_upload(ip, up_path, up_name, progress)
+                dev_upload(ip, up_path, up_name, slot, progress)
+                data = dev_post(ip, "/api/mode", slot)  # enviar = mostrar al momento
                 STATE.set_status(ip, data=data)
-                STATE.set_task(ip, f"«{up_name}» enviado", "ok", 1)
+                STATE.set_task(ip, f"«{up_name}» en pantalla", "ok", 1)
                 return True
             except Exception as e:  # noqa: BLE001
                 STATE.set_task(ip, friendly(e), "error")
@@ -321,7 +334,7 @@ def upload_job(src_path, name, ips, seconds, workdir):
         with ThreadPoolExecutor(max_workers=8) as ex:
             ok = sum(ex.map(one, ips))
         fails = len(ips) - ok
-        STATE.set_notice(f"«{up_name}» enviado a {ok} de {len(ips)} equipos" + (f" ({fails} con error)" if fails else ""),
+        STATE.set_notice(f"«{up_name}» en pantalla en {ok} de {len(ips)} equipos" + (f" ({fails} con error)" if fails else ""),
                          "ok" if not fails else "error")
     finally:
         STATE.busy = False
@@ -578,9 +591,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def mode(self, body):
         mode = body.get("mode")
-        if mode not in ("camara", "respaldo"):
+        if mode not in MODES:
             raise ValueError("Modo no válido")
-        label = "Mostrar cámara" if mode == "camara" else "Mostrar respaldo"
+        label = "Mostrar " + MODES[mode].lower()
         run_on(self.target_ips(body), label, lambda ip: dev_post(ip, "/api/mode", mode))
         self.send_json(200, {"ok": True})
 
@@ -588,11 +601,16 @@ class Handler(BaseHTTPRequestHandler):
         text = str(body.get("text", "")).strip()
         if len(text) > 500:
             raise ValueError("Texto demasiado largo (máximo 500 caracteres)")
-        run_on(self.target_ips(body), "Enviar texto", lambda ip: dev_post(ip, "/api/text", text))
+        run_on(self.target_ips(body), "Guardar texto", lambda ip: dev_post(ip, "/api/text", text))
         self.send_json(200, {"ok": True})
 
     def delete(self, body):
-        run_on(self.target_ips(body), "Borrar archivo", lambda ip: dev_post(ip, "/api/delete"))
+        slot = body.get("slot")
+        if slot not in ("esquela", "imagen"):
+            raise ValueError("Indica qué borrar: esquela o imagen")
+        # Si se estaba viendo, el equipo vuelve solo a la cámara.
+        label = "Borrar " + ("esquelas" if slot == "esquela" else "imagen")
+        run_on(self.target_ips(body), label, lambda ip: dev_post(ip, "/api/delete?slot=" + slot))
         self.send_json(200, {"ok": True})
 
     def slideshow(self, body):
@@ -630,7 +648,7 @@ class Handler(BaseHTTPRequestHandler):
 
         CFG.set("seconds_per_slide", secs)
         STATE.busy = True
-        threading.Thread(target=upload_job, args=(zip_path, name, ips, secs, workdir), daemon=True).start()
+        threading.Thread(target=upload_job, args=(zip_path, name, ips, secs, workdir, "esquela"), daemon=True).start()
         self.send_json(200, {"ok": True})
 
     def settings(self, body):
@@ -688,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(400, {"error": f"No se recibió el archivo completo ({e})"})
 
         seconds = int(CFG.get("seconds_per_slide") or 8)
-        threading.Thread(target=upload_job, args=(src, name, ips, seconds, workdir), daemon=True).start()
+        threading.Thread(target=upload_job, args=(src, name, ips, seconds, workdir, "imagen"), daemon=True).start()
         self.send_json(200, {"ok": True})
 
 
@@ -774,7 +792,7 @@ PAGE = r"""<!doctype html>
       <table>
         <thead><tr>
           <th style="width:28px"><input type="checkbox" id="all" title="Marcar todos"></th>
-          <th>Equipo</th><th>Conexión</th><th>Cámara</th><th>En pantalla</th><th>Archivo de respaldo</th>
+          <th>Equipo</th><th>Conexión</th><th>Cámara</th><th>Mostrando</th><th>Esquelas</th><th>Imagen</th>
           <th>Libre</th><th style="width:210px">Última acción</th><th style="width:30px"></th>
         </tr></thead>
         <tbody id="rows"></tbody>
@@ -785,19 +803,22 @@ PAGE = r"""<!doctype html>
 
   <div class="grid">
     <section>
-      <h2>Qué mostrar</h2>
+      <h2>Mostrar</h2>
       <div class="row">
-        <button data-mode="camara">Mostrar cámara</button>
-        <button data-mode="respaldo">Mostrar respaldo</button>
+        <button data-mode="camara">Cámara</button>
+        <button data-mode="esquela">Esquelas</button>
+        <button data-mode="imagen">Imagen</button>
       </div>
+      <p class="hint">Cambia lo que se ve en los equipos marcados. Cada equipo guarda sus esquelas y su imagen,
+        así que se puede cambiar entre las tres sin volver a enviarlas. Al enviar esquelas o una imagen, se muestran al momento.</p>
     </section>
 
     <section>
-      <h2>Archivo de respaldo</h2>
+      <h2>Imagen</h2>
       <div class="row">
         <input type="file" id="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.mkv,.webm,.pptx,.ppt,.ppsx,.pps">
-        <button id="send-file">Enviar</button>
-        <button id="delete" class="danger">Borrar archivo</button>
+        <button id="send-file">Enviar y mostrar</button>
+        <button class="danger" data-delete="imagen">Borrar imagen</button>
       </div>
       <progress id="prog" max="100" value="0" hidden></progress>
       <p class="hint">Imagen, vídeo o PowerPoint. PowerPoint con 1 diapositiva → imagen; con varias → vídeo de
@@ -806,8 +827,8 @@ PAGE = r"""<!doctype html>
   </div>
 
   <section style="margin-top:14px">
-    <h2>Esquela y diapositivas</h2>
-    <p class="hint" style="margin:0 0 12px">Crea las diapositivas aquí y envíalas a los equipos marcados. Se muestran en bucle,
+    <h2>Esquelas</h2>
+    <p class="hint" style="margin:0 0 12px">Crea las diapositivas aquí y envíalas: se muestran al momento en los equipos marcados, en bucle,
       todas con el mismo tiempo (<input type="number" id="slide-secs" min="1" max="600" style="width:64px"> s cada una).</p>
     <div class="ed">
       <div>
@@ -821,8 +842,9 @@ PAGE = r"""<!doctype html>
         <div id="slide-form"></div>
         <canvas id="preview" width="1920" height="1080"></canvas>
         <div class="row" style="margin-top:10px">
-          <button id="send-slides">Enviar diapositivas a los equipos marcados</button>
-          <button id="clear-slides" class="danger">Vaciar</button>
+          <button id="send-slides">Enviar y mostrar en los equipos marcados</button>
+          <button class="danger" data-delete="esquela">Borrar esquelas de los equipos</button>
+          <button id="clear-slides" class="ghost">Vaciar el editor</button>
         </div>
         <progress id="slides-prog" max="100" value="0" hidden></progress>
       </div>
@@ -830,9 +852,10 @@ PAGE = r"""<!doctype html>
   </section>
 
   <section style="margin-top:14px">
-    <h2>Texto de respaldo (se muestra si no hay archivo)</h2>
+    <h2>Texto si no hay esquelas o imagen</h2>
     <textarea id="text" maxlength="500" placeholder="Cámara no disponible"></textarea>
-    <div class="row" style="margin-top:8px"><button id="send-text">Enviar texto</button></div>
+    <div class="row" style="margin-top:8px"><button id="send-text" class="ghost">Guardar texto</button></div>
+    <p class="hint">Se ve si eliges «Esquelas» o «Imagen» en un equipo que no tiene ese contenido.</p>
   </section>
 </main>
 
@@ -842,7 +865,7 @@ const selected = new Set(JSON.parse(localStorage.getItem('sel') || '[]'));
 let state = { devices: [] }, uploading = false, secsTouched = false;
 
 const CAM = { ok:['Funciona','ok'], fallo:['Fallo','bad'], conectando:['Conectando…','warn'], parada:['Desconectada','muted'] };
-const SHOW = { camara:'Cámara', respaldo:'Respaldo', ninguno:'App cerrada' };
+const SHOW = { camara:'Cámara', esquela:'Esquelas', imagen:'Imagen', ninguno:'App cerrada' };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const mb = b => { const m = b / 1048576; return (m < 10 ? m.toFixed(1) : m.toFixed(0)) + ' MB'; };
 function saveSel() { try { localStorage.setItem('sel', JSON.stringify([...selected])); } catch (_) {} }
@@ -866,8 +889,9 @@ function render() {
            : `<span class="bad" title="${esc(d.error)}"><span class="dot" style="background:currentColor"></span>${esc(d.error)}</span>`;
     const cam = on ? (CAM[s.camera] || [s.camera, '']) : ['–', 'muted'];
     const kind = f => f.type === 'diapositivas' ? `${f.slides} diapositivas × ${f.seconds} s` : f.type;
-    const file = on ? (s.file ? `${esc(s.file.name)} <span class="muted">(${kind(s.file)}, ${mb(s.file.size)})</span>`
-                               : `<span class="muted">Texto: «${esc(s.text)}»</span>`) : '<span class="muted">–</span>';
+    const slot = k => !on ? '<span class="muted">–</span>'
+      : (s.files && s.files[k]) ? `${esc(s.files[k].name)} <div class="muted">${kind(s.files[k])}, ${mb(s.files[k].size)}</div>`
+      : '<span class="muted">Nada</span>';
     const t = d.task;
     const task = !t ? '' : `<div class="task ${t.state === 'error' ? 'bad' : t.state === 'ok' ? 'ok' : ''}">${esc(t.text)}</div>`
       + (t.state === 'running' && t.progress != null ? `<div class="bar"><i style="width:${(t.progress * 100).toFixed(0)}%"></i></div>` : '');
@@ -877,15 +901,16 @@ function render() {
       <td class="name" data-rename="${esc(d.ip)}">${esc(d.name || d.ip)}<div class="ip">${d.name ? esc(d.ip) : ''}</div></td>
       <td>${conn}</td>
       <td class="${cam[1]}">${esc(cam[0])}</td>
-      <td>${on ? esc(SHOW[s.showing] || s.showing) : '<span class="muted">–</span>'}</td>
-      <td>${file}</td>
+      <td>${on ? `<b>${esc(SHOW[s.showing] || s.showing)}</b>` : '<span class="muted">–</span>'}</td>
+      <td>${slot('esquela')}</td>
+      <td>${slot('imagen')}</td>
       <td class="muted">${on ? mb(s.freeBytes) : '–'}</td>
       <td>${task}</td>
       <td><button class="x" data-remove="${esc(d.ip)}" title="Quitar de la lista">×</button></td>
     </tr>`;
   });
   $('rows').innerHTML = rows.join('') ||
-    '<tr><td colspan="9" class="muted" style="padding:18px 8px">No hay equipos. Pulsa «Buscar en la red» o añade una IP.</td></tr>';
+    '<tr><td colspan="10" class="muted" style="padding:18px 8px">No hay equipos. Pulsa «Buscar en la red» o añade una IP.</td></tr>';
   $('all').checked = state.devices.length > 0 && state.devices.every(d => selected.has(d.ip));
   if (!secsTouched && state.seconds_per_slide) $('secs').value = state.seconds_per_slide;
   if (typeof slideSecsTouched !== 'undefined' && !slideSecsTouched && state.seconds_per_slide) $('slide-secs').value = state.seconds_per_slide;
@@ -935,10 +960,12 @@ document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
   const list = ips(); if (list) action(() => post('/api/mode', { ips: list, mode: b.dataset.mode }));
 });
 $('send-text').onclick = () => { const list = ips(); if (list) action(() => post('/api/text', { ips: list, text: $('text').value })); };
-$('delete').onclick = () => {
+document.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
   const list = ips(); if (!list) return;
-  if (confirm(`¿Borrar el archivo de respaldo en ${list.length} equipo(s)?`)) action(() => post('/api/delete', { ips: list }));
-};
+  const what = b.dataset.delete === 'esquela' ? 'las esquelas' : 'la imagen';
+  if (confirm(`¿Borrar ${what} de ${list.length} equipo(s)? Si se estaba viendo, volverán a la cámara.`))
+    action(() => post('/api/delete', { ips: list, slot: b.dataset.delete }));
+});
 $('secs').oninput = () => { secsTouched = true; };
 $('secs').onchange = () => action(async () => { await post('/api/settings', { seconds_per_slide: $('secs').value }); secsTouched = false; });
 
@@ -1276,6 +1303,7 @@ setInterval(refresh, 1500);
 def main():
     port = int(CFG.get("port") or 8000)
     try:
+        ThreadingHTTPServer.allow_reuse_address = os.name != "nt"
         server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     except OSError as e:
         print(f"No se pudo abrir el puerto {port}: {e}")
