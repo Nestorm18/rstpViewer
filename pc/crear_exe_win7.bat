@@ -8,7 +8,7 @@ if not exist .venv32\Scripts\python.exe (
     uv venv --python cpython-3.8-windows-x86 .venv32 || goto :error
 )
 uv pip install --python .venv32\Scripts\python.exe pyinstaller==5.13.2 || goto :error
-.venv32\Scripts\python.exe -m PyInstaller --onefile --console --name PanelCentral-win7-32bit panel_central.py || goto :error
+.venv32\Scripts\python.exe -m PyInstaller --onefile --console --icon panel_central.ico --name PanelCentral-win7-32bit panel_central.py || goto :error
 echo.
 echo Listo: dist\PanelCentral-win7-32bit.exe
 pause
