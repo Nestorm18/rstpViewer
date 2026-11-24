@@ -126,6 +126,49 @@ class Config:
 CFG = Config()
 
 
+# =========================================================================== imagen fija
+
+# La imagen fija va siempre al final de las esquelas y no se borra con el editor. Se guarda en
+# este PC (no en el navegador) para que salga desde cualquier navegador que abra el panel.
+PINNED_PATH = os.path.join(base_dir(), "imagen_fija.json")
+MAX_PINNED_BYTES = 30 * 1048576
+PINNED_LOCK = threading.Lock()
+
+
+def load_pinned():
+    with PINNED_LOCK:
+        try:
+            with open(PINNED_PATH, encoding="utf-8") as f:
+                return clean_pinned(json.load(f))
+        except (OSError, ValueError):
+            return None
+
+
+def clean_pinned(p):
+    """Valida la imagen fija: None o {"type": "imagen", "image": data URL, "fit": contain|cover}."""
+    if p is None:
+        return None
+    image = p.get("image") if isinstance(p, dict) else None
+    if not isinstance(image, str) or not image.startswith("data:image/"):
+        raise ValueError("La imagen fija no es válida")
+    return {"type": "imagen", "image": image, "fit": "cover" if p.get("fit") == "cover" else "contain"}
+
+
+def save_pinned(p):
+    p = clean_pinned(p)
+    with PINNED_LOCK:
+        if p is None:
+            try:
+                os.remove(PINNED_PATH)
+            except FileNotFoundError:
+                pass
+            return
+        tmp = PINNED_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(p, f)
+        os.replace(tmp, PINNED_PATH)
+
+
 # =========================================================================== acceso a los equipos
 
 class DeviceError(Exception):
@@ -538,6 +581,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path == "/api/state":
             self.send_json(200, STATE.snapshot())
+        elif path == "/api/pinned":
+            self.send_json(200, {"pinned": load_pinned()})
         else:
             self.send_json(404, {"error": "No encontrado"})
 
@@ -550,7 +595,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/api/upload":
                 return self.upload(urllib.parse.parse_qs(url.query))
-            body = self.body_json(MAX_SLIDESHOW_BYTES if url.path == "/api/slideshow" else 1048576)
+            body = self.body_json(MAX_SLIDESHOW_BYTES if url.path == "/api/slideshow"
+                                  else MAX_PINNED_BYTES if url.path == "/api/pinned" else 1048576)
             handler = {
                 "/api/devices/add": self.add_device,
                 "/api/devices/remove": self.remove_device,
@@ -562,6 +608,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/cleanup": self.cleanup,
                 "/api/settings": self.settings,
                 "/api/slideshow": self.slideshow,
+                "/api/pinned": self.pinned,
             }.get(url.path)
             if not handler:
                 return self.send_json(404, {"error": "No encontrado"})
@@ -679,6 +726,14 @@ class Handler(BaseHTTPRequestHandler):
         if not 1 <= secs <= 600:
             raise ValueError("Los segundos por diapositiva deben estar entre 1 y 600")
         CFG.set("seconds_per_slide", secs)
+        self.send_json(200, {"ok": True})
+
+    def pinned(self, body):
+        """Guarda la imagen fija ({"pinned": {...}}) o la quita ({"pinned": null})."""
+        try:
+            save_pinned(body.get("pinned"))
+        except OSError as e:
+            raise ValueError(f"No se pudo guardar la imagen fija: {e.strerror or e}")
         self.send_json(200, {"ok": True})
 
     def upload(self, query):
@@ -1328,15 +1383,35 @@ async function drawSlide(ctx, s) {
   ctx.restore();
 }
 
-// ---- estado del editor (se guarda en este navegador)
+// ---- estado del editor (se guarda en este navegador; la imagen fija, en el panel)
 function saveSlides() {
-  try { localStorage.setItem('slides', JSON.stringify(slides)); }
+  const own = slides.filter(s => !s.locked);
+  try { localStorage.setItem('slides', JSON.stringify(own)); }
   catch (_) {
-    try { localStorage.setItem('slides', JSON.stringify(slides.map(s => ({ ...s, photo: null, image: null })))); } catch (_) {}
+    try { localStorage.setItem('slides', JSON.stringify(own.map(s => ({ ...s, photo: null, image: null })))); } catch (_) {}
   }
 }
-try { slides = JSON.parse(localStorage.getItem('slides') || '[]'); } catch (_) { slides = []; }
+try { slides = JSON.parse(localStorage.getItem('slides') || '[]').filter(s => !s.locked); } catch (_) { slides = []; }
 if (!slides.length) slides = [exampleEsquela()];
+
+// Imagen fija: una sola, siempre la última diapositiva. No se puede quitar ni mover, y se conserva
+// al vaciar el editor o cargar el ejemplo. Se guarda en el panel para verla desde cualquier navegador.
+const lockedSlides = () => slides.filter(s => s.locked);
+const insertPos = () => { const i = slides.findIndex(s => s.locked); return i < 0 ? slides.length : i; };
+async function savePinned() {
+  const p = slides.find(s => s.locked);
+  try { await post('/api/pinned', { pinned: p ? { image: p.image, fit: p.fit } : null }); }
+  catch (e) { notice('No se pudo guardar la imagen fija en el panel: ' + e.message, 'bad'); }
+}
+async function loadPinned() {
+  try {
+    const r = await fetch('/api/pinned', { cache: 'no-store' }).then(r => r.json());
+    if (!r.pinned) return;
+    slides = slides.filter(s => !s.locked);
+    slides.push({ ...r.pinned, type: 'imagen', locked: true });
+    renderEditor();
+  } catch (_) {}
+}
 
 let drawToken = 0;
 async function renderEditor() {
@@ -1345,8 +1420,9 @@ async function renderEditor() {
   $('slides').innerHTML = slides.map((s, i) => `
     <div class="thumb ${i === current ? 'on' : ''}" data-i="${i}">
       <canvas width="384" height="216"></canvas>
-      <div class="tb"><span>${i + 1}. ${s.type === 'esquela' ? 'Esquela' : 'Imagen'}</span>
-        <span><button class="x" data-up="${i}" title="Subir">↑</button><button class="x" data-down="${i}" title="Bajar">↓</button><button class="x" data-del="${i}" title="Quitar">×</button></span></div>
+      <div class="tb"><span>${i + 1}. ${s.locked ? '🔒 Imagen fija' : s.type === 'esquela' ? 'Esquela' : 'Imagen'}</span>
+        ${s.locked ? '<span title="Imagen fija: va siempre al final y no se borra">🔒</span>'
+          : `<span><button class="x" data-up="${i}" title="Subir">↑</button><button class="x" data-down="${i}" title="Bajar">↓</button><button class="x" data-del="${i}" title="Quitar">×</button></span>`}</div>
     </div>`).join('');
   renderForm();
   const token = ++drawToken;
@@ -1390,20 +1466,27 @@ function renderForm() {
     </div>`;
     $('slide-form').querySelector('[data-k=photoPos]').value = s.photoPos === 'izquierda' ? 'izquierda' : 'debajo';
   } else {
+    const lock = s.locked
+      ? `${field('', `<button class="ghost" data-unlock>🔓 Desbloquear</button>`)}
+         ${field('', `<span class="hint" style="margin:0">🔒 Imagen fija: va siempre al final de las esquelas y no se borra al vaciar el editor ni al cargar el ejemplo. Desbloquéala para cambiarla o quitarla.</span>`)}`
+      : `${field('', `<button class="ghost" data-lock ${s.image ? '' : 'disabled'}>🔒 Fijar al final (no se borra)</button>`)}
+         ${field('', `<span class="hint" style="margin:0">${s.image ? 'La deja siempre al final de las esquelas, aunque se vacíe el editor.' : 'Elige una imagen para poder fijarla.'}</span>`)}`;
     $('slide-form').innerHTML = `<div class="form">
-      ${field('Imagen', `<input type="file" accept="image/*" data-file="image">`)}
-      ${field('Ajuste', `<select data-k="fit" style="width:auto"><option value="contain">Entera (con bandas negras)</option><option value="cover">Llenar la pantalla (recorta)</option></select>`)}
+      ${field('Imagen', `<input type="file" accept="image/*" data-file="image" ${s.locked ? 'disabled' : ''}>`)}
+      ${field('Ajuste', `<select data-k="fit" style="width:auto" ${s.locked ? 'disabled' : ''}><option value="contain">Entera (con bandas negras)</option><option value="cover">Llenar la pantalla (recorta)</option></select>`)}
+      ${lock}
     </div>`;
     $('slide-form').querySelector('[data-k=fit]').value = s.fit;
   }
 }
 
 $('slide-form').addEventListener('input', e => {
-  const k = e.target.dataset.k; if (!k) return;
+  const k = e.target.dataset.k; if (!k || slides[current].locked) return;
   slides[current][k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
   redrawCurrent();
 });
 $('slide-form').addEventListener('change', async e => {
+  if (slides[current].locked) return;
   const k = e.target.dataset.file;
   if (k && e.target.files[0]) {
     try { slides[current][k] = await readImage(e.target.files[0]); renderEditor(); saveSlides(); }
@@ -1421,15 +1504,38 @@ $('slide-form').addEventListener('click', async e => {
     slides[current] = randomEsquela(s); saveSlides(); renderEditor();
     return;
   }
+  if (e.target.dataset.lock !== undefined) {
+    const s = slides[current];
+    if (!s.image) { notice('Elige una imagen para poder fijarla.', 'bad'); return; }
+    const prev = slides.find(x => x.locked);
+    if (prev && !await ask(`Ya hay una imagen fija. ¿Fijar esta en su lugar?
+(La anterior se queda como imagen normal, que se puede quitar)`, { ok: 'Fijar esta' })) return;
+    if (prev) prev.locked = false;
+    s.locked = true;
+    slides = slides.filter(x => x !== s).concat([s]);  // siempre al final
+    current = slides.length - 1;
+    saveSlides(); renderEditor(); await savePinned();
+    notice('Imagen fijada al final de las esquelas.', 'ok');
+    return;
+  }
+  if (e.target.dataset.unlock !== undefined) {
+    if (!await ask(`¿Desbloquear la imagen fija?
+(Pasa a ser una imagen normal: se podrá cambiar, mover o quitar)`, { ok: 'Desbloquear' })) return;
+    slides[current].locked = false;
+    saveSlides(); renderEditor(); await savePinned();
+    return;
+  }
   const k = e.target.dataset.clear; if (!k) return;
   slides[current][k] = null; saveSlides(); renderEditor();
 });
 $('slides').addEventListener('click', async e => {
   const t = e.target.dataset;
-  if (t.up != null) { const i = +t.up; if (i > 0) { [slides[i - 1], slides[i]] = [slides[i], slides[i - 1]]; current = i - 1; } }
-  else if (t.down != null) { const i = +t.down; if (i < slides.length - 1) { [slides[i + 1], slides[i]] = [slides[i], slides[i + 1]]; current = i + 1; } }
+  // La imagen fija no se mueve ni se quita, y nada se pone detrás de ella.
+  if (t.up != null) { const i = +t.up; if (i > 0 && !slides[i].locked) { [slides[i - 1], slides[i]] = [slides[i], slides[i - 1]]; current = i - 1; } }
+  else if (t.down != null) { const i = +t.down; if (i < slides.length - 1 && !slides[i].locked && !slides[i + 1].locked) { [slides[i + 1], slides[i]] = [slides[i], slides[i + 1]]; current = i + 1; } }
   else if (t.del != null) {
     const i = +t.del;
+    if (slides[i].locked) return;
     if (!await ask(`¿Quitar la diapositiva ${i + 1} del editor?`, { ok: 'Quitar' })) return;
     slides.splice(i, 1);
     if (!slides.length) slides = [newEsquela()];  // el editor nunca se queda vacío
@@ -1439,15 +1545,17 @@ $('slides').addEventListener('click', async e => {
   }
   saveSlides(); renderEditor();
 });
-$('add-esq').onclick = () => { slides.push(newEsquela()); current = slides.length - 1; saveSlides(); renderEditor(); };
-$('add-img').onclick = () => { slides.push(newImage()); current = slides.length - 1; saveSlides(); renderEditor(); };
+// Las diapositivas nuevas van antes de la imagen fija.
+$('add-esq').onclick = () => { const i = insertPos(); slides.splice(i, 0, newEsquela()); current = i; saveSlides(); renderEditor(); };
+$('add-img').onclick = () => { const i = insertPos(); slides.splice(i, 0, newImage()); current = i; saveSlides(); renderEditor(); };
+const keepsPinned = () => lockedSlides().length ? '\n(La imagen fija se mantiene)' : '';
 $('example-slides').onclick = async () => {
-  if (!await ask('¿Cambiar lo que hay en el editor por la esquela de ejemplo?', { ok: 'Cambiar' })) return;
-  slides = [exampleEsquela()]; current = 0; saveSlides(); renderEditor();
+  if (!await ask('¿Cambiar lo que hay en el editor por la esquela de ejemplo?' + keepsPinned(), { ok: 'Cambiar' })) return;
+  slides = [exampleEsquela(), ...lockedSlides()]; current = 0; saveSlides(); renderEditor();
 };
 $('clear-slides').onclick = async () => {
-  if (!await ask('¿Vaciar el editor y empezar de nuevo?', { ok: 'Vaciar' })) return;
-  slides = [newEsquela()]; current = 0; saveSlides(); renderEditor();
+  if (!await ask('¿Vaciar el editor y empezar de nuevo?' + keepsPinned(), { ok: 'Vaciar' })) return;
+  slides = [newEsquela(), ...lockedSlides()]; current = 0; saveSlides(); renderEditor();
 };
 
 let slideSecsTouched = false;
@@ -1484,6 +1592,7 @@ async function sendSlides(list) {
 }
 
 renderEditor();
+loadPinned();
 
 refresh();
 setInterval(refresh, 1500);

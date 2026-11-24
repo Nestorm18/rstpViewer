@@ -30,6 +30,7 @@ pc/*.spec
 __pycache__/
 
 pc/panel_central.json*
+pc/imagen_fija.json*
 
 # Archivos locales de trabajo
 temp/

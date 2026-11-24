@@ -68,6 +68,7 @@ En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel centra
   - Las diapositivas se ordenan con ↑ ↓, se ven en una vista previa y todas duran el mismo tiempo (segundos configurables).
   - Al pulsar **Mostrar → Esquelas**, se dibujan a 1920×1080, se reparten a los equipos marcados y se muestran al momento. **Borrar esquelas de los equipos** las elimina; si se estaban viendo, el equipo vuelve a la cámara.
   - Lo que hay en el editor se guarda en el navegador, así que no se pierde al cerrar la página. La primera vez aparece una **esquela de ejemplo** con datos inventados; **Cargar ejemplo** la recupera para usarla de plantilla.
+  - **Imagen fija:** en una diapositiva de imagen, **🔒 Fijar al final** la deja siempre como última diapositiva del pase. No se puede quitar ni mover, y se conserva al **Vaciar el editor** o **Cargar ejemplo**. Solo hay una; se guarda en el equipo del panel (`imagen_fija.json`), así que sale desde cualquier navegador. Para cambiarla o quitarla, **🔓 Desbloquear**.
 - **Imagen:** **Enviar y mostrar** reparte una imagen, un vídeo o un PowerPoint a los equipos marcados (con el progreso de cada uno) y la muestra al momento. **Borrar imagen** la elimina; si se estaba viendo, el equipo vuelve a la cámara.
 - Si un equipo está apagado, se marca en rojo y el resto se actualiza igual.
 - **PowerPoint en «Imagen»** (`.pptx`, `.ppt`, `.ppsx`): se convierte **una sola vez** con el PowerPoint instalado en el PC donde corre el panel, y se reparte a todos los equipos marcados:

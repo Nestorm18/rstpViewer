@@ -54,6 +54,7 @@ final class PanelServer {
     private static final long SPACE_MARGIN = 50L * 1048576;
     private static final int MAX_JSON = 1048576;
     private static final int MAX_SLIDESHOW_BYTES = 200 * 1048576;
+    private static final int MAX_PINNED_BYTES = 30 * 1048576;
     private static final int MAX_HEADER_BYTES = 16 * 1024;
 
     private static final Map<String, String> MODES = new LinkedHashMap<>();
@@ -88,6 +89,57 @@ final class PanelServer {
         this.app = app;
         this.cfg = new Config(app.getFilesDir());
         cleanTemp();
+    }
+
+    // ---------------------------------------------------------------- imagen fija
+
+    /**
+     * Imagen fija del editor de esquelas: va siempre al final y no se borra con el editor. Se guarda
+     * en la tablet (no en el navegador) para verla desde cualquier navegador, igual que en el PC.
+     */
+    private File pinnedFile() {
+        return new File(app.getFilesDir(), "imagen_fija.json");
+    }
+
+    private synchronized JSONObject loadPinned() {
+        File f = pinnedFile();
+        if (!f.exists()) return null;
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) b.write(buf, 0, n);
+            return cleanPinned(new JSONObject(new String(b.toByteArray(), StandardCharsets.UTF_8)));
+        } catch (IOException | JSONException | BadRequest e) {
+            return null;
+        }
+    }
+
+    /** null o {"type": "imagen", "image": data URL, "fit": contain|cover}. */
+    private static JSONObject cleanPinned(JSONObject p) throws BadRequest, JSONException {
+        if (p == null) return null;
+        String image = p.optString("image", "");
+        if (!image.startsWith("data:image/")) throw new BadRequest("La imagen fija no es válida");
+        return new JSONObject()
+                .put("type", "imagen")
+                .put("image", image)
+                .put("fit", "cover".equals(p.optString("fit")) ? "cover" : "contain");
+    }
+
+    private synchronized void savePinned(JSONObject p) throws BadRequest, JSONException, IOException {
+        p = cleanPinned(p);
+        File f = pinnedFile();
+        if (p == null) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            return;
+        }
+        File tmp = new File(f.getPath() + ".tmp");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(p.toString().getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+        }
+        if (!tmp.renameTo(f)) throw new IOException("No se pudo guardar la imagen fija");
     }
 
     private void listen(final ServerSocket ss) {
@@ -369,6 +421,9 @@ final class PanelServer {
                 send(out, 200, "text/html; charset=utf-8", page());
             } else if ("/api/state".equals(req.path)) {
                 sendJson(out, 200, state.snapshot(cfg));
+            } else if ("/api/pinned".equals(req.path)) {
+                JSONObject p = loadPinned();
+                sendJson(out, 200, new JSONObject().put("pinned", p == null ? JSONObject.NULL : p));
             } else {
                 sendJson(out, 404, error("No encontrado"));
             }
@@ -382,7 +437,8 @@ final class PanelServer {
             upload(req, out);
             return;
         }
-        JSONObject body = bodyJson(req, "/api/slideshow".equals(req.path) ? MAX_SLIDESHOW_BYTES : MAX_JSON);
+        JSONObject body = bodyJson(req, "/api/slideshow".equals(req.path) ? MAX_SLIDESHOW_BYTES
+                : "/api/pinned".equals(req.path) ? MAX_PINNED_BYTES : MAX_JSON);
         switch (req.path) {
             case "/api/devices/add": addDevice(body); break;
             case "/api/devices/remove": cfg.remove(body.optString("ip")); break;
@@ -394,6 +450,7 @@ final class PanelServer {
             case "/api/cleanup": cleanup(body); break;
             case "/api/settings": cfg.setSecondsPerSlide(seconds(body.opt("seconds_per_slide"))); break;
             case "/api/slideshow": slideshow(body); break;
+            case "/api/pinned": savePinned(body.optJSONObject("pinned")); break;
             default:
                 sendJson(out, 404, error("No encontrado"));
                 return;
