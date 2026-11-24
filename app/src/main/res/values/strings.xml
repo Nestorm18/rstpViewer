@@ -2,6 +2,12 @@
 <resources>
     <string name="app_name">RTSP Viewer</string>
     <string name="settings_title">Configurar cámara</string>
+    <string name="show">Mostrar en pantalla</string>
+    <string name="mode_camara">Cámara</string>
+    <string name="mode_esquela">Esquelas</string>
+    <string name="mode_imagen">Imagen</string>
+    <string name="mode_empty_esquela">Este equipo no tiene esquelas guardadas: se verá el texto de abajo. Envíalas desde el panel central.</string>
+    <string name="mode_empty_imagen">Este equipo no tiene ninguna imagen guardada: se verá el texto de abajo. Envíala desde el panel central.</string>
     <string name="ip">IP de la cámara</string>
     <string name="port">Puerto RTSP</string>
     <string name="user">Usuario</string>

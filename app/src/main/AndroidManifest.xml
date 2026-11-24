@@ -36,7 +36,8 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
-            android:windowSoftInputMode="adjustPan" />
+            android:theme="@style/SettingsTheme"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
 
         <receiver
             android:name=".BootReceiver"

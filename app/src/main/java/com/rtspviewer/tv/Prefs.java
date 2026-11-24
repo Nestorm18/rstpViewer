@@ -10,7 +10,7 @@ final class Prefs {
             MODE = "mode", BACKUP_TEXT = "backup_text", BACKUP_FILE = "backup_file", BACKUP_NAME = "backup_name";
 
     /**
-     * Qué se muestra; solo se cambia manualmente desde el panel central. "esquela" e "imagen"
+     * Qué se muestra; solo se cambia a mano, desde el panel central o desde los ajustes. "esquela" e "imagen"
      * son también los nombres de los dos huecos de contenido guardados (ver {@link Backup}).
      */
     static final String MODE_CAMERA = "camara", MODE_ESQUELA = "esquela", MODE_IMAGEN = "imagen";

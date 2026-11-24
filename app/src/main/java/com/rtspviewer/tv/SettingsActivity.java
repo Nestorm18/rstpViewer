@@ -11,6 +11,7 @@ import android.provider.Settings;
 import android.view.View;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -18,7 +19,26 @@ public class SettingsActivity extends Activity {
 
     private EditText ip, port, user, pass, path, backupText;
     private CheckBox tcp, autostart;
-    private TextView preview;
+    private TextView preview, modeHelp;
+    private RadioGroup mode;
+
+    private String selectedMode() {
+        int id = mode.getCheckedRadioButtonId();
+        if (id == R.id.mode_esquela) return Prefs.MODE_ESQUELA;
+        if (id == R.id.mode_imagen) return Prefs.MODE_IMAGEN;
+        return Prefs.MODE_CAMERA;
+    }
+
+    /** Avisa si se elige esquelas o imagen y el equipo no tiene ese contenido guardado. */
+    private void updateModeHelp() {
+        String m = selectedMode();
+        if (!Prefs.MODE_CAMERA.equals(m) && Backup.current(this, m) == null) {
+            modeHelp.setText(Prefs.MODE_ESQUELA.equals(m) ? R.string.mode_empty_esquela : R.string.mode_empty_imagen);
+            modeHelp.setVisibility(View.VISIBLE);
+        } else {
+            modeHelp.setVisibility(View.GONE);
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -51,6 +71,17 @@ public class SettingsActivity extends Activity {
         backupText.setText(p.getString(Prefs.BACKUP_TEXT, ""));
         updatePreview();
 
+        mode = findViewById(R.id.mode);
+        modeHelp = findViewById(R.id.mode_help);
+        String current = Prefs.mode(this);
+        int checkedId = Prefs.MODE_ESQUELA.equals(current) ? R.id.mode_esquela
+                : Prefs.MODE_IMAGEN.equals(current) ? R.id.mode_imagen : R.id.mode_camara;
+        mode.check(checkedId);
+        mode.setOnCheckedChangeListener((g, id) -> updateModeHelp());
+        updateModeHelp();
+        // Empezar en el selector y no en un campo de texto, para que no se abra el teclado.
+        findViewById(checkedId).requestFocus();
+
         findViewById(R.id.save).setOnClickListener(v -> save());
         findViewById(R.id.grant_autostart).setOnClickListener(v -> requestOverlayPermission());
         autostart.setOnCheckedChangeListener((b, checked) -> updatePermissionHint());
@@ -81,7 +112,9 @@ public class SettingsActivity extends Activity {
     }
 
     private void save() {
-        if (ip.getText().toString().trim().isEmpty()) {
+        String newMode = selectedMode();
+        // La IP solo hace falta para ver la cámara.
+        if (Prefs.MODE_CAMERA.equals(newMode) && ip.getText().toString().trim().isEmpty()) {
             ip.setError(getString(R.string.ip_required));
             ip.requestFocus();
             return;
@@ -96,6 +129,7 @@ public class SettingsActivity extends Activity {
                 .putBoolean(Prefs.TCP, tcp.isChecked())
                 .putBoolean(Prefs.AUTOSTART, autostart.isChecked())
                 .putString(Prefs.BACKUP_TEXT, backupText.getText().toString().trim())
+                .putString(Prefs.MODE, newMode)
                 .apply();
         Toast.makeText(this, R.string.saved, Toast.LENGTH_SHORT).show();
         finish();

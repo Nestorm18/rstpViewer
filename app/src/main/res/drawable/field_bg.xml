@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Caja de los campos de texto: bien visible en la TV y resaltada al tener el foco del mando -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFF" />
+            <stroke android:width="4dp" android:color="#29B6F6" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#E0E0E0" />
+            <stroke android:width="2dp" android:color="#9E9E9E" />
+            <corners android:radius="8dp" />
+        </shape>
+    </item>
+</selector>

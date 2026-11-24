@@ -35,7 +35,7 @@ rtsp://usuario:contraseña@IP:puerto/ruta
 | Ezviz | `/h264/ch1/main/av_stream` (usuario `admin`, contraseña = código de verificación de la etiqueta) |
 
 ## Qué se muestra: cámara, esquelas o imagen
-Cada equipo puede mostrar una de tres cosas. Se elige **solo a mano** desde el panel central: la app nunca cambia sola.
+Cada equipo puede mostrar una de tres cosas. Se elige **solo a mano**, desde el panel central o en la pantalla de ajustes del propio equipo (**Mostrar en pantalla**, y luego **Guardar**): la app nunca cambia sola.
 
 | Mostrar | Qué se ve |
 |---|---|
