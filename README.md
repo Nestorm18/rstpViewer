@@ -77,6 +77,17 @@ En la pantalla de ajustes se ve la IP del equipo (para añadirlo al panel centra
 La lista de equipos y los ajustes se guardan en `pc/panel_central.json`. Ahí se puede cambiar también el puerto (`port`) y si se abre el navegador al iniciar (`open_browser`).
 Al cerrar la ventana negra se detiene el panel, pero los equipos siguen mostrando lo último que se les envió.
 
+### Panel central en una tablet Android
+El módulo [`panel`](panel) es la app **Panel Central** para tablets Android (probada con Android 15 y 16). Hace lo mismo que el panel de Windows y se ve igual. Su página se saca al compilar de [`pc/panel_central.py`](pc/panel_central.py), así que solo hay que cambiarla en un sitio.
+
+- **Instalar:** copia `PanelCentral-…-tablet.apk` a la tablet y ábrelo. Es una app aparte de RTSP Viewer, así que la misma tablet puede tener las dos.
+- La tablet debe estar en la **misma red Wi-Fi** que los equipos. **Buscar en la red** revisa la red /24 de la tablet.
+- Desde otro equipo de la red también se puede usar el panel de la tablet: abre `http://IP_DE_LA_TABLET:8000` mientras la app está abierta.
+- **Diferencia con el PC:** la tablet **no convierte PowerPoint**. Para enviarlo hay que usar el panel del PC, o guardarlo antes como imagen o vídeo.
+- La lista de equipos se guarda en la propia tablet. Cada panel, el del PC y el de la tablet, tiene su propia lista.
+
+Compilar: `gradlew.bat :panel:assembleDebug` → `panel/build/outputs/apk/debug/panel-debug.apk`.
+
 ### API HTTP
 El servidor escucha en el puerto 8080 y solo atiende a direcciones de red local (privadas, link-local o loopback). No tiene contraseña, así que cualquiera en tu red local puede cambiar lo que se muestra.
 
@@ -107,7 +118,7 @@ curl -X POST --data-binary "imagen" http://IP_DEL_STICK:8080/api/mode
 ```
 
 ## Compilar
-Requisitos: JDK 17 o 21 y el Android SDK (plataforma 34).
+Requisitos: JDK 17 o 21 y el Android SDK (plataforma 34). Con JDK 25 falla Gradle 8.13 (error «25.0.x»): usa `JAVA_HOME` apuntando a un JDK 21.
 
 - **Android Studio:** abre la carpeta del proyecto → *Build → Build APK(s)*.
 - **Línea de comandos:**
