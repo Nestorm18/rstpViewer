@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "rstpViewer"
 include(":app")
+include(":panel")

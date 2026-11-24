@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cuatro pantallas: el panel que gestiona todos los equipos -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path android:fillColor="#0277BD" android:pathData="M0,0h48v48h-48z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M8,10h14v10h-14z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M26,10h14v10h-14z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M8,24h14v10h-14z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M26,24h14v10h-14z" />
+    <path android:fillColor="#E53935" android:pathData="M12,15m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0" />
+    <path android:fillColor="#FFFFFF" android:pathData="M14,38h20v2h-20z" />
+</vector>
