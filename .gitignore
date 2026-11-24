@@ -25,6 +25,7 @@ Thumbs.db
 # Programa de PC
 pc/build/
 pc/dist/
+pc/.venv32/
 pc/*.spec
 __pycache__/
 

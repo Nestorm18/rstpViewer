@@ -1154,8 +1154,7 @@ function randomEsquela(s) {
       `${fallecio} con los Santos Sacramentos.`,
       '',
       'Conducción del cadáver:',
-      `${dia[0].toUpperCase()}${dia.slice(1)}, a las ${pick(RND.hora)} h, desde el tanatorio`,
-      `a la iglesia parroquial de ${santo}, donde se celebrará el funeral.`,
+      `${dia[0].toUpperCase()}${dia.slice(1)}, a las ${pick(RND.hora)} h, iglesia parroquial de ${santo}`,
     ].join(String.fromCharCode(10)),
   };
 }
@@ -1164,12 +1163,11 @@ function randomEsquela(s) {
 function exampleEsquela() {
   return { ...newEsquela(), heading:'La Señora', name:'Dña. Nombre Apellido Apellido', age:'87',
     details: [
-      'Falleció el día 18 de noviembre de 2026,',
+      'Falleció el día 24 de noviembre de 2026,',
       'confortada con los Santos Sacramentos.',
       '',
       'Conducción del cadáver:',
-      'Viernes, a las 15:30 h, desde el tanatorio',
-      'a la iglesia parroquial, donde se celebrará el funeral.',
+      'Jueves, a las 16:00 h, iglesia parroquial de Santa María',
     ].join(String.fromCharCode(10)) };
 }
 
@@ -1226,23 +1224,24 @@ function drawCross(ctx, cx, top, h, color) {
   ctx.fillRect(cx - w / 2, top + h * 0.26, w, t);
 }
 
-// Bloques de texto de la esquela con un factor de escala k; devuelve la altura total.
-function esquelaBlocks(ctx, s, k, maxW) {
+// Bloques de texto de la esquela con un factor de escala k (kd para los detalles); devuelve la altura total.
+function esquelaBlocks(ctx, s, k, maxW, kd) {
   const b = [];
-  const add = (text, size, weight, style, gap, color) => {
-    font(ctx, size * k, weight, style);
-    for (const line of wrap(ctx, text, maxW)) b.push({ text: line, size: size * k, weight, style, color });
-    b.push({ gap: gap * k });
+  const add = (text, size, weight, style, gap, color, kk) => {
+    kk = kk || k;
+    font(ctx, size * kk, weight, style);
+    for (const line of wrap(ctx, text, maxW)) b.push({ text: line, size: size * kk, weight, style, color });
+    b.push({ gap: gap * kk });
   };
   if (s.heading.trim()) add(s.heading.trim(), 58, 'normal', 'italic', 18, 'soft');
-  add(s.name.trim() || 'Nombre', 104, 'bold', '', 14, 'fg');
+  add(s.name.trim() || 'Nombre', 110, 'bold', '', 14, 'fg', kd); // el nombre se encoge como los detalles
   if (String(s.age).trim()) add(/^\d+$/.test(String(s.age).trim()) ? `${String(s.age).trim()} años` : String(s.age).trim(), 52, 'normal', 'italic', 10, 'soft');
   if (s.dep) add('D.E.P.', 64, 'bold', '', 20, 'fg');
   if (s.details.trim()) {
     b.push({ rule: true, gap: 34 * k });
     for (const line of s.details.trim().split('\n')) {
       const strong = /:\s*$/.test(line);
-      add(line.trim(), 46, strong ? 'bold' : 'normal', '', strong ? 4 : 12, strong ? 'fg' : 'soft');
+      add(line.trim(), 84, strong ? 'bold' : 'normal', '', strong ? 4 : 12, strong ? 'fg' : 'soft', kd);
     }
   }
   let h = 0;
@@ -1286,7 +1285,7 @@ async function drawSlide(ctx, s) {
   };
 
   const photo = await loadImg(s.photo);
-  let x0 = 130, x1 = W - 130, bottom = H - 110;
+  let x0 = 130, x1 = W - 130, bottom = H - 80;
   if (photo && s.photoPos === 'izquierda') {
     // Foto de la persona, en vertical a la izquierda
     const ph = 640, pw = Math.min(520, ph * photo.width / photo.height);
@@ -1302,12 +1301,14 @@ async function drawSlide(ctx, s) {
 
   let top = 110;
   const strip = photo && s.photoPos !== 'izquierda';
-  if (s.cross) { drawCross(ctx, cx, strip ? 84 : 96, strip ? 90 : 120, st.fg); top = strip ? 196 : 250; }
+  if (s.cross) { drawCross(ctx, cx, strip ? 84 : 96, strip ? 70 : 90, st.fg); top = strip ? 162 : 192; }
   const avail = bottom - top;
 
-  // Reducir el tamaño hasta que todo quepa
-  let k = 1, lay = esquelaBlocks(ctx, s, k, maxW);
-  while (lay.height > avail && k > 0.35) { k -= 0.04; lay = esquelaBlocks(ctx, s, k, maxW); }
+  // Reducir el tamaño hasta que todo quepa: primero el encabezado, el nombre y los huecos,
+  // y solo si no basta, también los detalles (para que se sigan leyendo bien en la TV).
+  let k = 1, kd = 1, lay = esquelaBlocks(ctx, s, k, maxW, kd);
+  while (lay.height > avail && k > 0.8) { k -= 0.02; lay = esquelaBlocks(ctx, s, k, maxW, kd); }
+  while (lay.height > avail && k > 0.3) { k -= 0.02; kd = Math.min(1, k / 0.8); lay = esquelaBlocks(ctx, s, k, maxW, kd); }
 
   let y = top + Math.max(0, (avail - lay.height) / 2);
   ctx.textAlign = 'center'; ctx.textBaseline = 'top';
@@ -1377,7 +1378,7 @@ function renderForm() {
       ${field('Encabezado', `<input type="text" data-k="heading" value="${esc(s.heading)}" placeholder="La Señora / El Señor">`)}
       ${field('Nombre', `<input type="text" data-k="name" value="${esc(s.name)}" placeholder="Dña. Nombre Apellido Apellido">`)}
       ${field('Edad', `<input type="text" data-k="age" value="${esc(s.age)}" placeholder="Ej.: 87 (se muestra «87 años»), o vacío" style="max-width:340px">`)}
-      ${field('Detalles', `<textarea data-k="details" rows="5" placeholder="Conducción del cadáver:&#10;Viernes a las 15:30 h&#10;Iglesia y cementerio parroquiales de ...">${esc(s.details)}</textarea>`)}
+      ${field('Detalles', `<textarea data-k="details" rows="5" placeholder="Conducción del cadáver:&#10;Jueves, a las 16:00 h, iglesia parroquial de ...">${esc(s.details)}</textarea>`)}
       ${field('', `<span class="hint" style="margin:0">Las líneas que terminan en «:» salen en negrita.</span>`)}
       ${field('Imagen', `<input type="file" accept="image/*" data-file="photo"> ${s.photo ? '<button class="ghost" data-clear="photo">Quitar imagen</button>' : ''}`)}
       ${field('Posición', `<select data-k="photoPos" style="width:auto">
